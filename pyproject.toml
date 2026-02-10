@@ -1,0 +1,27 @@
+[project]
+name = "tfm-control-ucm"
+version = "0.1.0"
+description = "The thesis of the master in control of UCM"
+authors = [
+    {name = "MAMARTOC\\marti",email = "martreigadas@gmail.com"}
+]
+license = {text = "MIT"}
+requires-python = ">=3.10,<3.15"
+dependencies = [
+    "torch (>=2.10.0,<3.0.0)",
+    "gymnasium (>=1.2.3,<2.0.0)",
+    "torchrl (>=0.11.1,<0.12.0)",
+    "pyyaml (>=6.0.3,<7.0.0)",
+    "tqdm (>=4.67.3,<5.0.0)",
+    "tensorboard (>=2.20.0,<3.0.0)",
+    "matplotlib (>=3.10.8,<4.0.0)",
+    "wandb (>=0.24.2,<0.25.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+package-mode = false
