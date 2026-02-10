@@ -1,0 +1,9 @@
+pytorch:
+  seed: 42
+  device: "cuda"
+
+model:
+  hidden_layers: [64, 64]
+  activation: relu
+  optimizer: adam
+  learning_rate: 0.0005
