@@ -1,41 +1,22 @@
 [project]
-name = "tfm-control-ucm"
+name = "gridmap"
 version = "0.1.0"
-description = "The thesis of the master in control of UCM"
+description = "This is the grid map that the robot will move on"
 authors = [
     {name = "MAMARTOC\\marti",email = "martreigadas@gmail.com"}
 ]
-readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.10,<3.15"
+requires-python = ">=3.10"
 dependencies = [
     "torch (>=2.10.0,<3.0.0)",
     "gymnasium (>=1.2.3,<2.0.0)",
-    "torchrl (>=0.11.1,<0.12.0)",
-    "pyyaml (>=6.0.3,<7.0.0)",
+    "numpy (>=2.4.2,<3.0.0)",
     "tqdm (>=4.67.3,<5.0.0)",
-    "tensorboard (>=2.20.0,<3.0.0)",
-    "matplotlib (>=3.10.8,<4.0.0)",
-    "wandb (>=0.24.2,<0.25.0)",
-    "pygame (>=2.6.1,<3.0.0)"
+    "pyyaml (>=6.0.3,<7.0.0)",
+    "torchrl (>=0.11.1,<0.12.0)"
 ]
 
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
-
-[tool.poetry]
-packages = [
-    { include = "tfm_control_ucm", from = "src" }
-]
-include = ["src/tfm_control_ucm/maps/*.json"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-ra -q"
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-

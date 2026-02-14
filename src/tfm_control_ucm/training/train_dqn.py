@@ -8,7 +8,7 @@ from torchrl.modules import MLP
 from torchrl.objectives import DQNLoss
 from torchrl.collectors import SyncDataCollector
 
-from tfm_control_ucm.core.environment import RobotEnv
+from tfm_control_ucm.core.grid_env.environment import RobotEnv
 from tfm_control_ucm.core.gridmap import GridMap
 
 

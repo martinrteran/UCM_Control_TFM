@@ -5,8 +5,8 @@ Simple test to verify that the pygame renderer works with RobotEnv.
 """
 
 import time
-from tfm_control_ucm.environment.maps.gridmap import GridMap
-from tfm_control_ucm.environment.environment import RobotEnv
+from tfm_control_ucm.core.maps.grid.map import GridMap
+from tfm_control_ucm.core.grid_env.environment import RobotEnv
 
 
 def test_render():
