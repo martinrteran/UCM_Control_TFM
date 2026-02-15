@@ -1,5 +1,6 @@
 from __future__ import annotations
 import numpy as np
+import torch
 from typing import Sequence, Iterable,Union, Optional, List
 import json
 
@@ -60,6 +61,7 @@ class GridMap:
     OBSTACLE = 1
 
     def __init__(self, 
+                 name: str,
                  size:Optional[Union[Iterable[int],np.ndarray]], 
                  grid_obstacles: Optional[List[GridObstacle]]=None) -> None:
         size = np.asarray(size)
@@ -69,7 +71,7 @@ class GridMap:
         
         self._size = size
         self._width, self._height = self._size
-        self.grid = np.ones((self._height, self._width), dtype=np.int8) * self.FREE
+        self.grid = torch.full((self._height, self._width), self.FREE, dtype=torch.int8, device='cpu', requires_grad=False)
 
         if grid_obstacles:
             for grid_obstacle in grid_obstacles:
@@ -79,6 +81,8 @@ class GridMap:
             self._obstacles = grid_obstacles
         else:
             self._obstacles = []
+        
+        self.name = name
     def get_size(self): return self._size
     def get_width(self): return self._width
     def get_height(self): return self._height
@@ -92,10 +96,10 @@ class GridMap:
         return 0 <= row < self._height and 0 <= col < self._width
 
     def is_free(self, row: int, col: int) -> bool:
-        return self.in_bounds(row, col) and self.grid[row, col] == self.FREE
+        return self.in_bounds(row, col) and bool(self.grid[row, col] == self.FREE)
 
     def is_obstacle(self, row: int, col: int) -> bool:
-        return self.in_bounds(row, col) and self.grid[row, col] == self.OBSTACLE
+        return self.in_bounds(row, col) and bool(self.grid[row, col] == self.OBSTACLE)
 
     def set_obstacle(self, obstacle: GridObstacle):
         x,y = obstacle.get_corner()
@@ -114,10 +118,10 @@ class GridMap:
             self._obstacles.remove(obstacle)
     
     def to_numpy(self) -> np.ndarray:
-        return self.grid.copy()
+        return self.grid.detach().clone().cpu().numpy()
 
     def __repr__(self) -> str:
-        return f"GridMap(width={self._width}, height={self._height})"
+        return f"GridMap[{self.name}](width={self._width}, height={self._height})"
 
     def __str__(self) -> str:
         symbols = {self.FREE: ".", self.OBSTACLE: "#"}
@@ -138,11 +142,16 @@ class GridMap:
         """
 
         data = {
+            "name": self.name,
+            "description": "Grid map representation",
             "size": self._size,
             "obstacles":  self._obstacles.copy(),
         }
-
-        with open(path, "wt", encoding='utf-8') as f:
+        import os
+        _path = os.path.join(path, self.name+".json")
+        if not os.path.exists(path):
+            os.makedirs(path)
+        with open(_path, "wt", encoding='utf-8') as f:
             json.dump(data, f, indent=4)
 
     @classmethod
@@ -153,7 +162,8 @@ class GridMap:
         with open(path, "r") as f:
             data = json.load(f)
 
+        name = data['name']
         size = data["size"]
         obstacles = [GridObstacle(obs['corner'],obs['size']) for obs in data["obstacles"]]
 
-        return cls(size = size, grid_obstacles=obstacles) # type: ignore
+        return cls(name=name, size = size, grid_obstacles=obstacles) # type: ignore

@@ -12,7 +12,7 @@ from typing import Tuple, Optional, Union, Iterable
 from .map import GridMap
 import numpy as np
 
-class GridRobot: # TODO - FIX, is x,y for position and orientation vector
+class GridRobot:
     """
     A simple robot that moves inside a GridMap.
 
@@ -118,3 +118,80 @@ class GridRobot: # TODO - FIX, is x,y for position and orientation vector
     # ------------------------------------------------------------
     def __repr__(self):
         return f"Robot(pos={self.position}, orient='{self.orientation}')"
+
+class GridRobotNotTurning:
+    """
+    A simple robot that moves inside a GridMap.
+
+    Parameters
+    ----------
+    gridmap : GridMap
+        The map where the robot moves.
+    position : (row, col)
+        Initial position of the robot.
+    orientation : str
+        One of: "N", "S", "E", "W".
+    """
+    
+    ORIENTATIONS = {"N":{"angle":np.pi/2,"vector":(0,1)},"E":{"angle":0.0,"vector":(1,0)},"S":{"angle":-np.pi/2,"vector":(0,-1)},"W":{"angle":np.pi,"vector":(-1,0)}} #["N", "E", "S", "W"]  # clockwise order
+    ORIENTATIONS_LIST = ["N","W","S","E"]
+
+    @classmethod
+    def get_orientations(cls):
+        return cls.ORIENTATIONS
+
+    def __init__(
+        self,
+        *,
+        position: Union[Iterable[int],np.ndarray] = (0, 0),
+        orientation: str = "N",
+    ):
+        if not isinstance(orientation, str) or orientation not in self.ORIENTATIONS: raise ValueError(f"Invalid orientation {orientation}. Must be one of {', '.join(self.ORIENTATIONS.keys())}")
+        position = np.asarray(position)
+        if position.size != 2: raise ValueError("Invalid size of position, it must be of size 2")
+        if not np.issubdtype(position.dtype,np.number): raise TypeError("Invalid value type of the elements of the position")
+        if any(position < 0): raise ValueError("All the elements of the position must be positive or equal to zero")
+
+        self.position = position
+        self.orientation = orientation
+    
+    def reset(self, position, orientation: str):
+        self.position = position
+        self.orientation = orientation
+
+
+    # ------------------------------------------------------------
+    # Movement
+    # ------------------------------------------------------------
+    def move(self, map: GridMap, direction: str):
+        DIRS = ["forward", "backward", "right", "left"]
+        if direction and direction.lower() not in DIRS: raise ValueError(f"Invalid direction {direction}. Must be one of {', '.join(DIRS)}")
+        orientation = ""
+        match direction:
+            case "forward":
+                orientation = "N"
+            case "backward":
+                orientation = "S"
+            case "right":
+                orientation = "R"
+            case "left":
+                orientation = "L"
+        
+        dc, dr = self.ORIENTATIONS[orientation]['vector']
+        c, r = self.position
+        nr, nc = r - dr, c + dc
+        moved = False
+
+        if map.is_free(nr, nc):
+            self.position = (nc, nr)
+            self.orientation = orientation
+            moved = True
+
+        return moved  # collision
+
+    # ------------------------------------------------------------
+    # Utility
+    # ------------------------------------------------------------
+    def __repr__(self):
+        return f"Robot(pos={self.position}, orient='{self.orientation}')"
+
