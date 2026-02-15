@@ -17,8 +17,8 @@ class GridObstacle:
         
         if corner.size != 2: raise ValueError(f"The input 'left_up_corner_position' must be of size 2")
         if size_.size != 2: raise ValueError(f"The input 'size' must be of size 2")
-        if corner.dtype != np.number: raise ValueError(f"The data type of all the elements of 'left_up_corner_position' must be numeric")
-        if size_.dtype != np.number: raise ValueError(f"The data type of all the elements of 'size' must be numeric")
+        if not np.issubdtype(corner.dtype,np.number): raise ValueError(f"The data type of all the elements of 'left_up_corner_position' must be numeric")
+        if not np.issubdtype(size_.dtype,np.number): raise ValueError(f"The data type of all the elements of 'size' must be numeric")
         if any(size_ <= 0): raise ValueError(f"All the elements of size must be positive and greater than 0")
 
         size_ = size_.reshape((2,))
@@ -64,7 +64,7 @@ class GridMap:
                  grid_obstacles: Optional[List[GridObstacle]]=None) -> None:
         size = np.asarray(size)
         if size.size != 2: raise ValueError("The size of 'size' must be 2")
-        if size.dtype != np.number: raise TypeError("The type of value of all the elements of 'size' must be numeric")
+        if not np.issubdtype(size.dtype, np.number): raise TypeError("The type of value of all the elements of 'size' must be numeric")
         if any(size<=0):raise ValueError("The value of all the elements of 'size' must be greater than zero")
         
         self._size = size
@@ -78,6 +78,9 @@ class GridMap:
             self._obstacles = grid_obstacles
         else:
             self._obstacles = []
+    def get_size(self): return self._size
+    def get_width(self): return self._width
+    def get_height(self): return self._height
 
     def is_obstacle_in_bounds(self, obstacle:GridObstacle):
         corners = obstacle.get_corners()
@@ -150,6 +153,6 @@ class GridMap:
             data = json.load(f)
 
         size = data["size"]
-        obstacles = [GridObstacle(pos,s) for pos,s in data["obstacles"]]
+        obstacles = [GridObstacle(obs['corner'],obs['size']) for obs in data["obstacles"]]
 
-        return cls(size = size, obstacles=obstacles) # type: ignore
+        return cls(size = size, grid_obstacles=obstacles) # type: ignore

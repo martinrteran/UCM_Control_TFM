@@ -19,7 +19,7 @@ from .map import GridMap
 from .robot import GridRobot
 from .sensor import GridLidar
 
-from src.tfm_control_ucm.renderers.grid_renderer import PygameRenderer
+from tfm_control_ucm.renderers.grid_renderer import PygameRenderer
 
 class Grid_Robot_Env(gym.Env):
     """
@@ -30,6 +30,7 @@ class Grid_Robot_Env(gym.Env):
     _min_num_rays = 8
     _max_noise_std = 0.5
     _max_range = 100
+    _min_separation_distance = 5
     
     def __init__(self, *,
                 map: GridMap,
@@ -56,13 +57,32 @@ class Grid_Robot_Env(gym.Env):
         self.max_steps = max_iteration_steps
         self.render_mode = render_mode
 
-        self.action_space = spaces.Discrete(2,dtype=np.int8) # One for move foward and bakward and another one for changing orientation
-        self.observation_space = spaces.Box( low=np.array([[0.0, -np.pi]] * 8), high=np.array([[self._max_range, np.pi]] * 8), dtype=np.float32 )
+        max_map_distance = np.sqrt(np.sum(np.array(self.map.grid.shape) **2))
+        self._map_diagonal = max_map_distance
+
+        self.action_space = spaces.Discrete(1,dtype=np.int8) # One for move foward and bakward and another one for changing orientation
+        self.observation_space = spaces.Box( low=np.array([[-1, -np.pi]] * self._min_num_rays + [[0.0, -np.pi]]), high=np.array([[self._max_range, np.pi]] * self._min_num_rays + [[max_map_distance, np.pi]]))
 
         self.steps = 0
    
     def _get_observation(self):
-        return self.lidar.scan(self.map, self.robot.position, self.robot.ORIENTATIONS[self.robot.orientation]['vector']).astype(np.float32)
+        scanning = self.lidar.scan(self.map, self.robot.position, self.robot.ORIENTATIONS[self.robot.orientation]['angle'])
+        
+        idx = np.argsort(scanning[:,0])
+        scanning = scanning[idx[::-1]] # descending order
+        
+        top_scanning = scanning[0:self._min_num_rays]
+        robot_obs = np.array([self._dist_to_goal(),self._angle_to_goal()])
+        
+        concated = np.vstack([top_scanning, robot_obs])
+        return concated
+
+    def _dist_to_goal(self):
+        return np.sqrt(np.sum((self.goal_pos - self.robot.position)**2))    
+    
+    def _angle_to_goal(self):
+        x_diff, y_diff = self.goal_pos - self.robot.position
+        return np.atan2(y_diff, x_diff)
     
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
@@ -77,85 +97,65 @@ class Grid_Robot_Env(gym.Env):
                 self.robot.reset((c,r),orien)
                 isCorrect = True
         
+        isCorrect = False
+        while not isCorrect:
+            r = np.random.randint(0,height)
+            c = np.random.randint(0,width)
+            self.goal_pos = np.array([c,r])
+            dist_to_robot = self._dist_to_goal()
+            if self.map.is_free(r, c) and dist_to_robot > self._min_separation_distance:
+                isCorrect = True
+
         self.steps = 0
+        self.previous_action = np.array([0,0]) # Do nothing
 
         obs = self._get_observation()
         info = {}
 
         return obs, info
     
-    def step(self, action):
-        
-        reward = 0.0
-        terminated = False
-        
-
-        truncated = self.steps >= self.max_steps
-
-        obs = self._get_observation()
-        info = {}
-
-        return obs, reward, terminated, truncated, info
-
-
-class RobotEnv(gym.Env):
-    metadata = {"render_modes": ["human"], "render_fps": 10}
-
-    def step(self, action):
+    def step(self, action: int):
         self.steps += 1
-
-        reward = 0
+    
         terminated = False
-        truncated = False
-
-        # Execute action
-        if action == 0:  # forward
-            moved = self.robot.forward()
-            reward += 1 if moved else -1
-            if not moved:
-                terminated = True  # collision
-        elif action == 1:  # turn left
+        if action == 0: # Move foward
+            moved = self.robot.forward(self.map)
+            terminated = not moved
+        # elif action == [-1,0]: # Move backward
+        #     moved = self.robot.backward(self.map)
+        #     terminated = not moved
+        elif action == 1: # Rotate left
             self.robot.turn_left()
-        elif action == 2:  # turn right
-            self.robot.turn_right()
-
-        # Check goal
-        if self.goal_pos and self.robot.position == self.goal_pos:
-            reward += 10
-            terminated = True
-
-        # Step penalty
-        reward -= 0.01
-
-        # Max steps
-        if self.steps >= self.max_steps:
-            truncated = True
+        else:# elif action == 3: # Rotate right
+            self.robot.turn_right()            
 
         obs = self._get_observation()
         info = {}
+        
+        dist2goal = obs[-1][0]
+        
+        mean_dists = np.mean(obs[:-1,0])
+
+        reward = -0.2 if self.previous_action > 0 and action > 0 else -0.01
+        reward -= dist2goal/self._map_diagonal
+        reward -= mean_dists/self._map_diagonal
+
+        if not terminated and self._dist_to_goal() < 1:
+            terminated = True
+            reward += 10.0
+
+
+        truncated = bool(self.steps >= self.max_steps)
+
+        self.previous_action = action
+        
 
         return obs, reward, terminated, truncated, info
-
-    # ------------------------------------------------------------
-    # Observation
-    # ------------------------------------------------------------
-    def _get_observation(self):
-        return self.lidar.scan(
-            self.gridmap,
-            self.robot.position,
-            self.robot.orientation,
-        ).astype(np.float32)
-
-    # ------------------------------------------------------------
-    # Rendering (placeholder)
-    # ------------------------------------------------------------
+    
     def render(self):
-        if self.render_mode != "human":
-            return
-
-        if not hasattr(self, "renderer"):
-            self.renderer = PygameRenderer(self.gridmap)
-
-        distances = self._get_observation()
+        if self.render_mode != 'human': return
+        if not hasattr(self, "renderer"): self.renderer = PygameRenderer(self.map)
+        dists = self._get_observation()
         self.renderer.handle_events()
-        self.renderer.render(self.robot, self.lidar, distances)
+        self.renderer.render(self.robot, self.robot,dists)
+        

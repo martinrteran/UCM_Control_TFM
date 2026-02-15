@@ -42,7 +42,7 @@ class GridRobot: # TODO - FIX, is x,y for position and orientation vector
         if not isinstance(orientation, str) or orientation not in self.ORIENTATIONS: raise ValueError(f"Invalid orientation {orientation}. Must be one of {', '.join(self.ORIENTATIONS.keys())}")
         position = np.asarray(position)
         if position.size != 2: raise ValueError("Invalid size of position, it must be of size 2")
-        if position.dtype != np.number: raise TypeError("Invalid value type of the elements of the position")
+        if not np.issubdtype(position.dtype,np.number): raise TypeError("Invalid value type of the elements of the position")
         if any(position < 0): raise ValueError("All the elements of the position must be positive or equal to zero")
 
         self.position = position
@@ -74,7 +74,7 @@ class GridRobot: # TODO - FIX, is x,y for position and orientation vector
         """
         dc, dr = self.ORIENTATIONS[self.orientation]['vector']
         c, r = self.position
-        nr, nc = r + dr, c + dc
+        nr, nc = r - dr, c + dc
         moved = False
 
         if map.is_free(nr, nc):
@@ -89,7 +89,7 @@ class GridRobot: # TODO - FIX, is x,y for position and orientation vector
         """
         dc, dr = self.ORIENTATIONS[self.orientation]['vector']
         c, r = self.position
-        nr, nc = r - dr, c - dc
+        nr, nc = r + dr, c - dc
         moved = False
 
         if map.is_free(nr, nc):

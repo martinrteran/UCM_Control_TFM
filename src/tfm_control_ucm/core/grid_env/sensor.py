@@ -24,7 +24,7 @@ class GridLidar:
         num_rays: int = 9,
         max_range: int = 10,
         fov: float = np.pi,
-        noise_std: float = 0.0,
+        noise_std: float = 0.001,
     ):
         if not isinstance(num_rays, np.number|int): raise TypeError("The num_rays must be an integer")
         if not isinstance(max_range, np.number|int): raise TypeError("The max_range must be an integer")
@@ -55,8 +55,8 @@ class GridLidar:
         self,
         gridmap: GridMap,
         position: Union[Iterable[int],np.ndarray],
-        orientation: Union[Iterable[int],np.ndarray],
-    ) -> np.ndarray:
+        orientation: Union[float,np.floating],
+    ) :
         """
         Perform a LIDAR scan from the robot's position.
 
@@ -66,38 +66,34 @@ class GridLidar:
             Array of size (num_rays,) with distances to obstacles.
         """
         position = np.asarray(position)
-        orientation = np.asarray(orientation)
 
         if position.size != 2: raise ValueError("The position must be of size 2")
-        if orientation.size != 2: raise ValueError("The orientation must be of size 2")
 
-        if position.dtype != np.number: raise TypeError("The position must be of type number")
-        if orientation.dtype != np.number: raise TypeError("The orientation must be of type number")
+        if not np.issubdtype(position.dtype,np.number): raise TypeError("The position must be of type number")
 
-        if not gridmap.in_bounds(position[1], position[0]):
-            return np.empty(())
         
         angles = self._compute_ray_angles(orientation)
-        distances = np.zeros(self.num_rays, dtype=float)
+        # distances = np.zeros(self.num_rays, dtype=float)
+        return_values = []
 
         for i, angle in enumerate(angles):
-            distances[i] = self._cast_single_ray(gridmap, position, angle)
+            distance = self._cast_single_ray(gridmap, position, angle)
+            # if distance> 0 and self.noise_std > 0:
+            #     distance += np.random.normal(0, self.noise_std) #, size=self.num_rays)
+            return_values.append([distance, angle])
 
-        if self.noise_std > 0:
-            distances += np.random.normal(0, self.noise_std, size=self.num_rays)
-
-        return distances
+        return np.array(return_values)
 
     # ------------------------------------------------------------
     # Ray angle computation
     # ------------------------------------------------------------
-    def _compute_ray_angles(self, orientation: np.ndarray) -> np.ndarray:
+    def _compute_ray_angles(self, orientation: Union[float, np.floating]) -> np.ndarray:
         """
         Compute absolute angles (in radians) for each ray based on robot orientation.
-        Orientation is one of: N (0,1), E (0,1), S(0,-1), W(-1,0).
+        Orientation is one of: N pi/2, E 0, S -pi/2, W pi.
         """
 
-        base_angle = np.atan2(orientation[1],orientation[0])
+        base_angle = orientation
 
         # Spread rays evenly across the FOV
         half_fov = self.fov_rad / 2
@@ -119,7 +115,7 @@ class GridLidar:
         dr = np.sin(angle_rad)
         dc = np.cos(angle_rad)
 
-        r, c = position
+        c, r = position
 
         for dist in range(1, self.max_range + 1):
             rr = int(round(r + dr * dist))
@@ -131,4 +127,4 @@ class GridLidar:
             if gridmap.is_obstacle(rr, cc):
                 return dist  # hit obstacle
 
-        return float(self.max_range)
+        return -1.0

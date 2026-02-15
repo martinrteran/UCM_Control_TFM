@@ -6,12 +6,14 @@ Author: Martin
 """
 
 import pygame
-import math
+import numpy as np
+from tfm_control_ucm.core.grid_env.map import GridMap
+from tfm_control_ucm.core.grid_env.robot import GridRobot
 
 class PygameRenderer:
     def __init__(
         self,
-        gridmap,
+        gridmap: GridMap,
         cell_size=32,
         robot_color=(255, 0, 0),
         obstacle_color=(50, 50, 50),
@@ -28,8 +30,7 @@ class PygameRenderer:
         self.free_color = free_color
         self.ray_color = ray_color
 
-        width_px = gridmap.width * cell_size
-        height_px = gridmap.height * cell_size
+        width_px, height_px = gridmap.get_size() * cell_size
 
         self.screen = pygame.display.set_mode((width_px, height_px))
         pygame.display.set_caption("Robot Environment")
@@ -38,8 +39,8 @@ class PygameRenderer:
     # Drawing helpers
     # ------------------------------------------------------------
     def draw_grid(self):
-        for r in range(self.gridmap.height):
-            for c in range(self.gridmap.width):
+        for r in range(self.gridmap.get_height()):
+            for c in range(self.gridmap.get_width()):
                 rect = pygame.Rect(
                     c * self.cell_size,
                     r * self.cell_size,
@@ -66,17 +67,15 @@ class PygameRenderer:
         )
         pygame.draw.rect(self.screen, self.robot_color, rect)
 
-    def draw_lidar(self, robot, lidar, distances):
-        r, c = robot.position
+    def draw_lidar(self, robot: GridRobot, distances):
+        c, r = robot.position
         cx = c * self.cell_size + self.cell_size // 2
         cy = r * self.cell_size + self.cell_size // 2
 
-        angles = lidar._compute_ray_angles(robot.orientation)
 
-        for dist, angle_deg in zip(distances, angles):
-            angle_rad = math.radians(angle_deg)
-            dx = math.cos(angle_rad) * dist * self.cell_size
-            dy = -math.sin(angle_rad) * dist * self.cell_size
+        for dist, angle_rad in distances:
+            dx = np.cos(angle_rad) * dist * self.cell_size
+            dy = -np.sin(angle_rad) * dist * self.cell_size
 
             pygame.draw.line(
                 self.screen,
@@ -93,7 +92,7 @@ class PygameRenderer:
         self.screen.fill((0, 0, 0))
         self.draw_grid()
         self.draw_robot(robot)
-        self.draw_lidar(robot, lidar, distances)
+        self.draw_lidar(lidar, distances)
         pygame.display.flip()
 
     def handle_events(self):
