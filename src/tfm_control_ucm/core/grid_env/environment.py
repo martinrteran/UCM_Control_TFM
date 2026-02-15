@@ -157,5 +157,5 @@ class Grid_Robot_Env(gym.Env):
         if not hasattr(self, "renderer"): self.renderer = PygameRenderer(self.map)
         dists = self._get_observation()
         self.renderer.handle_events()
-        self.renderer.render(self.robot, self.robot,dists)
+        self.renderer.render(self.robot, self.lidar,dists, self.goal_pos)
         

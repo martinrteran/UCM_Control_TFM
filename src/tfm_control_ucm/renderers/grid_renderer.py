@@ -9,6 +9,7 @@ import pygame
 import numpy as np
 from tfm_control_ucm.core.grid_env.map import GridMap
 from tfm_control_ucm.core.grid_env.robot import GridRobot
+from tfm_control_ucm.core.grid_env.sensor import  GridLidar
 
 class PygameRenderer:
     def __init__(
@@ -29,6 +30,8 @@ class PygameRenderer:
         self.obstacle_color = obstacle_color
         self.free_color = free_color
         self.ray_color = ray_color
+        self.max_ray_color = (100,120,255)
+        self.goal_color = (0, 255, 0)
 
         width_px, height_px = gridmap.get_size() * cell_size
 
@@ -58,7 +61,7 @@ class PygameRenderer:
                 pygame.draw.rect(self.screen, (180, 180, 180), rect, 1)
 
     def draw_robot(self, robot):
-        r, c = robot.position
+        c, r = robot.position
         rect = pygame.Rect(
             c * self.cell_size,
             r * self.cell_size,
@@ -66,20 +69,31 @@ class PygameRenderer:
             self.cell_size,
         )
         pygame.draw.rect(self.screen, self.robot_color, rect)
+    
+    def draw_goal(self, goal_position):
+        c, r = goal_position
+        rect = pygame.Rect(
+            c * self.cell_size,
+            r * self.cell_size,
+            self.cell_size,
+            self.cell_size,
+        )
+        pygame.draw.rect(self.screen, self.goal_color, rect)
 
-    def draw_lidar(self, robot: GridRobot, distances):
+    def draw_lidar(self, robot, lidar, distances):
         c, r = robot.position
         cx = c * self.cell_size + self.cell_size // 2
         cy = r * self.cell_size + self.cell_size // 2
 
 
         for dist, angle_rad in distances:
+            ray_color, dist = (self.ray_color, dist) if dist >= 0 else (self.max_ray_color, lidar.max_range)
             dx = np.cos(angle_rad) * dist * self.cell_size
             dy = -np.sin(angle_rad) * dist * self.cell_size
 
             pygame.draw.line(
                 self.screen,
-                self.ray_color,
+                ray_color,
                 (cx, cy),
                 (cx + dx, cy + dy),
                 2,
@@ -88,11 +102,14 @@ class PygameRenderer:
     # ------------------------------------------------------------
     # Main render function
     # ------------------------------------------------------------
-    def render(self, robot, lidar, distances):
+    def render(self, robot, lidar, distances, goal_position):
         self.screen.fill((0, 0, 0))
         self.draw_grid()
+        
         self.draw_robot(robot)
-        self.draw_lidar(lidar, distances)
+        self.draw_lidar(robot, lidar, distances)
+        self.draw_goal(goal_position)
+
         pygame.display.flip()
 
     def handle_events(self):

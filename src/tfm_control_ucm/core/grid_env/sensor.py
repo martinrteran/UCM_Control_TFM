@@ -21,7 +21,7 @@ class GridLidar:
     def __init__(
         self,
         *,
-        num_rays: int = 9,
+        num_rays: int = 10,
         max_range: int = 10,
         fov: float = np.pi,
         noise_std: float = 0.001,
@@ -41,6 +41,7 @@ class GridLidar:
         self.max_range = max_range
         self.fov_rad = fov
         self.noise_std = noise_std
+        self.last_results = np.ones((self.num_rays,2))*(-1.0)
     
     def get_config(self):
         return {'num_rays':self.num_rays, 'max_range':self.max_range, 'fov': self.fov_rad, 'noise_std': self.noise_std}
@@ -82,6 +83,8 @@ class GridLidar:
             #     distance += np.random.normal(0, self.noise_std) #, size=self.num_rays)
             return_values.append([distance, angle])
 
+        self.last_results = np.array(return_values)
+
         return np.array(return_values)
 
     # ------------------------------------------------------------
@@ -118,7 +121,7 @@ class GridLidar:
         c, r = position
 
         for dist in range(1, self.max_range + 1):
-            rr = int(round(r + dr * dist))
+            rr = int(round(r - dr * dist))
             cc = int(round(c + dc * dist))
 
             if not gridmap.in_bounds(rr, cc):
