@@ -37,7 +37,8 @@ class Grid_Robot_Env(gym.Env):
                 robot: GridRobot,
                 lidar_config: Optional[Dict] = None,
                 max_iteration_steps: Union[int,np.integer] = 200,
-                render_mode: Optional[str] = None
+                render_mode: Optional[str] = None,
+                cell_size: int = 32
                 ) -> None:
         if not isinstance(map, GridMap): raise TypeError("The map must be of type GridMap")
         if not isinstance(robot, GridRobot): raise TypeError("The robot must be of type GridRobot")
@@ -64,6 +65,7 @@ class Grid_Robot_Env(gym.Env):
         self.observation_space = spaces.Box( low=np.array([[-1, -np.pi]] * self._min_num_rays + [[0.0, -np.pi]]), high=np.array([[self._max_range, np.pi]] * self._min_num_rays + [[max_map_distance, np.pi]]))
 
         self.steps = 0
+        self.cell_size = cell_size
    
     def _get_observation(self):
         scanning = self.lidar.scan(self.map, self.robot.position, self.robot.ORIENTATIONS[self.robot.orientation]['angle'])
@@ -107,7 +109,7 @@ class Grid_Robot_Env(gym.Env):
                 isCorrect = True
 
         self.steps = 0
-        self.previous_action = np.array([0,0]) # Do nothing
+        self.previous_action = -1 # Do nothing
 
         obs = self._get_observation()
         info = {}
@@ -154,8 +156,8 @@ class Grid_Robot_Env(gym.Env):
     
     def render(self):
         if self.render_mode != 'human': return
-        if not hasattr(self, "renderer"): self.renderer = PygameRenderer(self.map)
+        if not hasattr(self, "renderer"): self.renderer = PygameRenderer(self.map, cell_size=self.cell_size)
         dists = self._get_observation()
         self.renderer.handle_events()
-        self.renderer.render(self.robot, self.lidar,dists, self.goal_pos)
+        self.renderer.render(self.robot, self.lidar,dists[:-1,:], self.goal_pos)
         

@@ -73,7 +73,8 @@ class GridMap:
 
         if grid_obstacles:
             for grid_obstacle in grid_obstacles:
-                if not self.is_obstacle_in_bounds(grid_obstacle): raise IndexError(f"The grid_obstacle {grid_obstacle} is out of bounds")
+                if not self.is_obstacle_in_bounds(grid_obstacle): 
+                    raise IndexError(f"The grid_obstacle {grid_obstacle} is out of bounds")
                 self.set_obstacle(grid_obstacle)
             self._obstacles = grid_obstacles
         else:
@@ -84,7 +85,7 @@ class GridMap:
 
     def is_obstacle_in_bounds(self, obstacle:GridObstacle):
         corners = obstacle.get_corners()
-        in_bounds = all(self.in_bounds(r,c) for r, c in corners)
+        in_bounds = all(self.in_bounds(r,c) for c, r in corners)
         return in_bounds
 
     def in_bounds(self, row: int, col: int) -> bool:
