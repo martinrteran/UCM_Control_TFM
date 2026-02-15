@@ -1,0 +1,7 @@
+torch
+gymnasium
+tqdm
+pyyaml
+torchrl
+wandb
+pygame

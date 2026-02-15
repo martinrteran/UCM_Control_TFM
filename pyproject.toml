@@ -3,24 +3,52 @@ name = "tfm_control_ucm"
 version = "0.1.0"
 description = "This is the grid map that the robot will move on"
 authors = [
-    {name = "MAMARTOC\\marti",email = "martreigadas@gmail.com"}
+    { name = "MAMARTOC\\marti", email = "martreigadas@gmail.com" }
 ]
-license = {text = "MIT"}
+license = { text = "MIT" }
 requires-python = ">=3.11,<3.12"
+
 dependencies = [
-    "poetry",
-    "torch (>=2.10.0,<3.0.0)",
     "gymnasium (>=1.2.3,<2.0.0)",
     "tqdm (>=4.67.3,<5.0.0)",
     "pyyaml (>=6.0.3,<7.0.0)",
     "torchrl (>=0.11.1,<0.12.0)",
-    "wandb (>=0.16)"
+    "wandb (>=0.16)",
+    "pygame"
 ]
-
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
-[poetry]
-package-mode = false
+# [tool.poetry]
+# package-mode = false
+
+# ---------------------------------------------------------
+# CUDA 12.1 PyTorch wheel source (used only on Linux/Windows)
+# ---------------------------------------------------------
+[[tool.poetry.source]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+priority = "explicit"
+
+# ---------------------------------------------------------
+# PyTorch dependencies
+# - CUDA wheels on Windows/Linux
+# - CPU wheels on macOS (MPS included automatically)
+# ---------------------------------------------------------
+[tool.poetry.dependencies]
+torch = [
+    { version = ">=2.1.0,<3.0.0", source = "pytorch-cu121", markers = "sys_platform != 'darwin'" },
+    { version = ">=2.1.0,<3.0.0", markers = "sys_platform == 'darwin'" }
+]
+
+torchvision = [
+    { version = "*", source = "pytorch-cu121", markers = "sys_platform != 'darwin'" },
+    { version = "*", markers = "sys_platform == 'darwin'" }
+]
+
+torchaudio = [
+    { version = "*", source = "pytorch-cu121", markers = "sys_platform != 'darwin'" },
+    { version = "*", markers = "sys_platform == 'darwin'" }
+]
