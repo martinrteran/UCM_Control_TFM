@@ -1,22 +1,26 @@
 [project]
-name = "gridmap"
+name = "tfm_control_ucm"
 version = "0.1.0"
 description = "This is the grid map that the robot will move on"
 authors = [
     {name = "MAMARTOC\\marti",email = "martreigadas@gmail.com"}
 ]
 license = {text = "MIT"}
-requires-python = ">=3.10"
+requires-python = ">=3.11,<3.12"
 dependencies = [
+    "poetry",
     "torch (>=2.10.0,<3.0.0)",
     "gymnasium (>=1.2.3,<2.0.0)",
-    "numpy (>=2.4.2,<3.0.0)",
     "tqdm (>=4.67.3,<5.0.0)",
     "pyyaml (>=6.0.3,<7.0.0)",
-    "torchrl (>=0.11.1,<0.12.0)"
+    "torchrl (>=0.11.1,<0.12.0)",
+    "wandb (>=0.16)"
 ]
 
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[poetry]
+package-mode = false

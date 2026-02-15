@@ -66,7 +66,19 @@ class Grid_Robot_Env(gym.Env):
 
         self.steps = 0
         self.cell_size = cell_size
-   
+    
+    def get_observation_shape(self):
+        return self.observation_space.shape
+    
+    def get_observation_dim(self):
+        return np.prod(self.observation_space.shape)
+    
+    def get_action_dim(self):
+        return self.action_space.n
+    
+    def get_action_shape(self):
+        return self.action_space.shape
+
     def _get_observation(self):
         scanning = self.lidar.scan(self.map, self.robot.position, self.robot.ORIENTATIONS[self.robot.orientation]['angle'])
         
