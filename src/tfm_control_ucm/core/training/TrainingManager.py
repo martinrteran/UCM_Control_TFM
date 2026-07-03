@@ -32,7 +32,8 @@ class TrainerConfig:
     useTQDM: bool = True # Whether to use tqdm progress bars
     useEarlyStop: bool = True # Whether to use early stopping
     num_episodes: int = 100_000 # Total number of episodes to train
-    useSoftReset: bool = True # Whether to enable soft reset on Ctrl+\
+
+
 
     # For multi-environment
     onePerEnv: bool = True # Whether to train one agent one environment at a time vs change the environment between episodes
@@ -52,7 +53,6 @@ class TrainerConfig:
         assert isinstance(self.eps_step, int) and self.eps_step >= 0, "eps_step must be a non-negative integer"
         assert isinstance(self.style, str) and self.style in {"single", "mixed", "multi-env"}, "style must be a string and must be one of 'single', 'mixed' or 'multi-env'"
         assert isinstance(self.useEarlyStop, bool), "useEarlyStop must be a boolean"
-        assert isinstance(self.useSoftReset, bool), "useSoftReset must be a boolean"
 
 class BaseTrainer(ABC):
     envs: list[gym.Env] = []
@@ -91,80 +91,9 @@ class BaseTrainer(ABC):
     @abstractmethod
     def train(self, num_episodes: Optional[int] = None, eps_step: Optional[int] = None):
         raise NotImplementedError("train() must be implemented by subclasses")
-        
-    def is_stuck(self, recent_actions: deque, recent_rewards: deque, recent_successes: deque, episode: int) -> tuple[bool, str]:
-        """
-        Heuristics to detect whether the agent is stuck.
-
-        Parameters
-        ----------
-        recent_actions : deque
-            Last N episode-level dominant actions
-        recent_rewards : deque
-            Last N episode rewards
-        recent_successes : deque
-            Last N episode success indicators
-        episode : int
-            Current episode number
-
-        Returns
-        -------
-        (stuck: bool, reason: str)
-        """
-        # Don't check too early (let buffer fill first)
-        if episode < 5000:
-            return False, ""
-
-        # Check 1: Agent only ever picks the same action
-        if len(recent_actions) >= 50 and len(set(recent_actions)) == 1:
-            return True, f"Only using action {recent_actions[0]} for 50+ episodes"
-        
-        # Check 3: No successes in recent episodes
-        if len(recent_successes) >= 1000 and sum(recent_successes) == 0:
-            return True, f"No successes in 1000+ episodes"
-
-        # Check 2: Rewards are not improving and all negative
-        if len(recent_rewards) >= 500:
-            mean_reward = sum(recent_rewards) / len(recent_rewards)
-            if mean_reward < -200.0:
-                return True, f"Mean reward stuck at {mean_reward:.2f} for 500+ episodes"
-
-        
-        return False, ""
-
-    def do_soft_reset(self, agent, episode, writer):
-        """
-        Perform a soft reset: save current state, reset exploration and buffer.
-
-        Parameters
-        ----------
-        agent : GridAgent_2
-            The DQN agent
-        episode : int
-            Current episode (for logging)
-        """
-        self.print("\n" + "="*60)
-        self.print("🔄 Performing soft reset...")
-        self.print("="*60)
-
-        # Save pre-reset checkpoint so you can always go back
-        pre_reset_path = f"{self.models_save_dir}/{self.exec_date}/agent_pre_reset_ep{episode}.pth"
-        agent.save(pre_reset_path)
-        self.print(f"💾 Pre-reset checkpoint saved: {pre_reset_path}")
-
-        agent.soft_reset()
-
-        # Log the reset event in TensorBoard
-        writer.add_scalar("Events/SoftReset", 1.0, episode)
-
-        self.print(f"✅ Soft reset complete at episode {episode}")
-        self.print(f"   - Epsilon: {agent.epsilon:.4f}")
-        self.print(f"   - Buffer: cleared")
-        self.print("="*60 + "\n")   
-
+   
     def _inner_training(self, agent: BaseRLAgent, env: gym.Env, num_episodes: int, eps_step: int):
         global_step = 0
-        soft_reset_count = 0
         episodes = tqdm.tqdm(range(num_episodes),desc="Training") if self.config.useTQDM else range(num_episodes)
         recent_successes = deque(maxlen=1000)
         recent_rewards = deque(maxlen=600)
@@ -213,16 +142,6 @@ class BaseTrainer(ABC):
                         if loss is not None:
                             writer.add_scalar(f"Loss/Episode", loss, episode)
 
-                    if self.config.useSoftReset:
-                        stuck, reason = self.is_stuck(recent_actions, recent_rewards, recent_successes, episode)
-                        if stuck:
-                            soft_reset_count += 1
-                            self.print(f"\n⚠️  Agent stuck: {reason}")
-                            self.print(f"   Triggering automatic soft reset #{soft_reset_count}")
-                            self.do_soft_reset(agent, episode, writer)
-                            recent_actions.clear()
-                            recent_rewards.clear()
-                            recent_successes.clear()
                     
                     if self.config.useEarlyStop and earlyStopping is not None:
                         if earlyStopping(ep_reward, agent, self.print):
@@ -241,7 +160,6 @@ class BaseTrainer(ABC):
                     writer.add_scalar(f"Reward/Avg", ep_reward/ep_steps if ep_steps > 0 else 0, episode)
 
                     writer.add_scalar(f"Success/Episode", int(terminated), episode)
-                    writer.add_scalar("SoftResets/Total",        soft_reset_count,            episode)
 
                     writer.add_scalar(f"Distances/Start", start_dist, episode)
                     writer.add_scalar(f"Distances/End", state[-1][0], episode)
@@ -349,7 +267,6 @@ class MultiEnvironmentTrainer(BaseTrainer):
     @override
     def _inner_training(self, agent: BaseRLAgent, env: Optional[gym.Env], num_episodes: int, eps_step: int):
         global_step = 0
-        soft_reset_count = 0
         agent_id = id(agent)
         episodePerEnv = num_episodes//max(1, self.config.cyclesPerEnv)
         idx_env = 0
@@ -417,22 +334,10 @@ class MultiEnvironmentTrainer(BaseTrainer):
                     writer.add_scalar(f"Reward/Avg", ep_reward/ep_step if ep_step > 0 else 0, episode)
 
                     writer.add_scalar(f"Success/Episode", int(terminated), episode)
-                    writer.add_scalar("SoftResets/Total",        soft_reset_count,            episode)
-
                     writer.add_scalar(f"Distances/Start", start_dist, episode)
                     writer.add_scalar(f"Distances/End", state[-2], episode)
                     writer.add_scalar(f"Distances/Change", start_dist - state[-2], episode)
                     
-                    if self.config.useSoftReset:
-                        stuck, reason = self.is_stuck(recent_actions, recent_rewards, recent_successes, episode)
-                        if stuck:
-                            soft_reset_count += 1
-                            self.print(f"\n⚠️  Agent stuck: {reason}")
-                            self.print(f"   Triggering automatic soft reset #{soft_reset_count}")
-                            self.do_soft_reset(agent, episode, writer)
-                            recent_actions.clear()
-                            recent_rewards.clear()
-                            recent_successes.clear()
                     
                     if self.config.useEarlyStop and earlyStopping is not None:
                         if earlyStopping(ep_reward, agent, self.print):

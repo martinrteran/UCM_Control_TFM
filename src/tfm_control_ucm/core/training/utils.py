@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from msilib.schema import SelfReg
 import time
 import datetime
-from typing import Callable, Optional, override
+from typing import Callable, Optional
 import gymnasium as gym
 import numpy as np
 import signal
@@ -83,11 +83,6 @@ class InterruptHandler:
         self.print_fn("✅ Cleanup complete. Exiting...")
         self.print_fn("="*60)
         sys.exit(0)
-
-    def _handle_soft_reset(self, sig, frame):
-        """Ctrl+\\ → flag a soft reset to be applied at the next episode boundary."""
-        self.soft_reset_requested = True
-        self.print_fn("\n⚠️  Soft reset requested — will apply at end of current episode...")
 
     def _save_emergency(self, exc_type, exc_val):
         """Save emergency checkpoint on unexpected exception."""

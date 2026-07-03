@@ -219,29 +219,7 @@ class BaseRLAgent(ABC):
     def clear_buffer(self):
         """Clear replay buffer."""
         self.buffer.clear()
-    
-    def soft_reset(self):
-        """
-        Soft reset: keep learned weights, reset exploration and buffer.
-        """
-        print(f"🔄 Soft reset {self.algorithm.value} agent...")
-        self.reset_exploration()
-        self.clear_buffer()
-        print("✅ Soft reset complete")
-    
-    def hard_reset(self):
-        """
-        Hard reset: reinitialize networks and clear everything.
-        """
-        print(f"🔄 Hard reset {self.algorithm.value} agent...")
-        self._initialize_networks()
-        self.policy_net.to(self.device) # type: ignore
-        if self.value_net is not None:
-            self.value_net.to(self.device)
-        self._initialize_optimizer()
-        self.reset_exploration()
-        self.clear_buffer()
-        print("✅ Hard reset complete")
+
     
     # ========================================================================
     # Saving and loading

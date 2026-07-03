@@ -344,56 +344,6 @@ class GridAgent_2_FIXED:
     # NEW: Recovery Methods
     # ========================================================================
 
-    def soft_reset(self):
-        """
-        Soft reset - keep learned weights, reset exploration.
-        Use this first if agent gets stuck.
-        """
-        print("🔄 Performing soft reset...")
-        self.epsilon = self.eps_start
-        self.global_step = 0
-
-        # Clear buffer
-        self.buffer = ReplayBuffer(
-            storage=LazyTensorStorage(
-                max_size=self.buffer.storage.max_size, device=self.device
-            ),
-            batch_size=self.batch_size,
-        )
-
-        print(f"✅ Soft reset complete:")
-        print(f"   - Epsilon: {self.epsilon}")
-        print(f"   - Buffer cleared")
-
-    def hard_reset(self):
-        """
-        Hard reset - reinitialize everything.
-        Use this if soft reset doesn't work.
-        """
-        print("🔄 Performing hard reset...")
-
-        # Re-initialize networks
-        self.policy_net.apply(self.policy_net._init_weights) # type: ignore
-        self.target_net.load_state_dict(self.policy_net.state_dict())
-
-        # Reset optimizer
-        self.optimizer = optim.Adam(
-            self.policy_net.parameters(), lr=self.optimizer.param_groups[0]["lr"]
-        )
-
-        # Reset exploration
-        self.epsilon = self.eps_start
-        self.global_step = 0
-
-        # Clear buffer
-        self.buffer = ReplayBuffer(
-            storage=LazyTensorStorage(
-                max_size=self.buffer.storage.max_size, device=self.device
-            ),
-            batch_size=self.batch_size,
-        )
-
-        print("✅ Hard reset complete - starting fresh")
 
     def get_q_value_stats(self, states):
         """
@@ -707,60 +657,6 @@ class GridAgent(BaseRLAgent):
         self.target_net.eval()
 
         
-    
-    @override
-    def soft_reset(self):
-        """
-        Soft reset: keep learned weights, reset exploration and buffer.
-        
-        Use this first if the agent gets stuck in a local minimum.
-        """
-        from tqdm import tqdm
-        tqdm.write("🔄 Performing soft reset on GridAgent...")
-        
-        # Reset exploration
-        self.epsilon = self.eps_start
-        self.global_step = 0
-        
-        # Clear buffer
-        self.clear_buffer()
-        
-        tqdm.write("✅ Soft reset complete:")
-        tqdm.write(f"   - Epsilon: {self.epsilon}")
-        tqdm.write(f"   - Buffer cleared")
-        tqdm.write(f"   - Learned weights preserved")
-    
-    @override
-    def hard_reset(self):
-        """
-        Hard reset: reinitialize networks and clear everything.
-        
-        Use this if soft reset doesn't resolve the issue.
-        """
-        from tqdm import tqdm
-        tqdm.write("🔄 Performing hard reset on GridAgent...")
-        
-        # Reinitialize networks
-        self.policy_net.apply(self.policy_net._init_weights) # type: ignore
-        self.target_net.load_state_dict(self.policy_net.state_dict())
-        
-        # Reset optimizer
-        self.optimizer = optim.Adam(
-            self.policy_net.parameters(), lr=self.optimizer.param_groups[0]["lr"]
-        )
-
-        
-        # Reset exploration
-        self.epsilon = self.eps_start
-        self.global_step = 0
-        
-        # Clear buffer
-        self.clear_buffer()
-        
-        tqdm.write("✅ Hard reset complete:")
-        tqdm.write(f"   - Networks reinitialized")
-        tqdm.write(f"   - Optimizer reset")
-        tqdm.write(f"   - Buffer cleared")
     
     # ========================================================================
     # Override save/load to include target network and epsilon

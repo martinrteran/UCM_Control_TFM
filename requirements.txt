@@ -1,17 +1,5 @@
 # ----------------------------
-# PyTorch CUDA 12.6 (Windows/Linux)
-# ----------------------------
-torch --index-url https://download.pytorch.org/whl/cu126 ; sys_platform != "darwin"
-torchvision --index-url https://download.pytorch.org/whl/cu126 ; sys_platform != "darwin"
-
-# ----------------------------
-# PyTorch CPU/MPS (macOS)
-# ----------------------------
-torch ; sys_platform == "darwin"
-torchvision ; sys_platform == "darwin"
-
-# ----------------------------
-# Your other dependencies
+# Your other dependencies except for pytorch go here
 # ----------------------------
 gymnasium
 tqdm
