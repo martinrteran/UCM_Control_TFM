@@ -3,3 +3,4 @@
 .venv2
 checkpoints/*
 runs/*
+*.pyc

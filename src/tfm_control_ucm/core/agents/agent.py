@@ -14,7 +14,7 @@ Author: Martin
 
 from copy import deepcopy
 import os
-from typing import Optional, Tuple, override
+from typing import Optional, Tuple
 from venv import create
 import numpy as np
 import torch.nn as nn
@@ -634,16 +634,16 @@ class GridAgent(BaseRLAgent):
             print(f"[Step {self.global_step}] Target network updated")
     
     # ========================================================================
-    # Override reset methods with DQN-specific behavior
+    #  reset methods with DQN-specific behavior
     # ========================================================================
 
-    @override
+    
     def _initialize_networks(self, **kwargs):
         """
         Initialize policy and value networks.
         
         Called during __init__ if networks not provided.
-        Subclasses should override to create algorithm-specific architectures.
+        Subclasses should  to create algorithm-specific architectures.
         """
         # self.policy_net.apply(self.policy_net._init_weights)
         self.policy_net.reset_parameters() # type: ignore
@@ -659,7 +659,7 @@ class GridAgent(BaseRLAgent):
         
     
     # ========================================================================
-    # Override save/load to include target network and epsilon
+    #  save/load to include target network and epsilon
     # ========================================================================
     
     def save(self, path: str):
@@ -1031,6 +1031,7 @@ if __name__ == "__main__":
     
     # Create DQN agent
     config = RLConfig(
+        name ="test",
         obs_dim=10,
         action_dim=3,
         algorithm=RLAlgorithm.DDQN,

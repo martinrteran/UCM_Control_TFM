@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from msilib.schema import SelfReg
 import time
 import datetime
-from typing import Callable, Optional, override
+from typing import Callable, Optional
 import gymnasium as gym
 import numpy as np
 import signal
@@ -19,6 +19,7 @@ import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
 from tfm_control_ucm.core.training.utils import InterruptHandler, EarlyStopping
+from ...utils.path_planner import PathPlanner, TorchPathPlanner
 
 from ..agents.base_rl_agent import BaseRLAgent
 
@@ -95,11 +96,10 @@ class BaseTrainer(ABC):
     def _inner_training(self, agent: BaseRLAgent, env: gym.Env, num_episodes: int, eps_step: int):
         global_step = 0
         episodes = tqdm.tqdm(range(num_episodes),desc="Training") if self.config.useTQDM else range(num_episodes)
-        recent_successes = deque(maxlen=1000)
-        recent_rewards = deque(maxlen=600)
-        recent_actions = deque(maxlen=80)
-
-        earlyStopping = EarlyStopping(save_path=f"{self.models_save_dir}/{agent.config.name}/early_stopping.pth") if self.config.useEarlyStop else None
+        # recent_successes = deque(maxlen=1000)
+        # recent_rewards = deque(maxlen=600)
+        # recent_actions = deque(maxlen=80)
+        path_planner = PathPlanner(env.map.grid) # type: ignore
 
         with SummaryWriter(log_dir=f"{self.logs_save_dir}/{agent.config.name}") as writer:
             with InterruptHandler(agent, writer,f"{self.models_save_dir}/{agent.config.name}") as handler:
@@ -112,7 +112,12 @@ class BaseTrainer(ABC):
                     ep_reward = 0
                     ep_action_counts = [0]*self.act_dim
                     ep_terminated_count= [0]*2
-                    start_dist = state[-1][0]
+                    start_dist = state[-2] # state[-1][0]
+                    start_pos = env.robot.position# type: ignore
+                    end_pos = env.goal_pos# type: ignore
+                    start_pos = (int(start_pos[1]), int(start_pos[0]))
+                    end_pos = (int(end_pos[1]), int(end_pos[0]))
+                    min_steps = path_planner.min_steps(start=start_pos, goal=end_pos, method="wavefront") 
 
                     while not done:
                         action = agent.select_action(state)
@@ -120,7 +125,7 @@ class BaseTrainer(ABC):
                         done = terminated or truncated
                         agent.store(state, action, reward, next_state, done)
 
-                        if eps_step>0 and ep_steps % eps_step == 0:
+                        if ep_steps > 0 and eps_step>0 and ep_steps % eps_step == 0:
                             loss = agent.train_step()
                         
                         ep_steps += 1
@@ -131,11 +136,11 @@ class BaseTrainer(ABC):
 
                         state = next_state
                  
-                    dominant_action = int(np.argmax(ep_action_counts))
-                    dominant_success = int(np.argmax(ep_terminated_count))
-                    recent_actions.append(dominant_action)
-                    recent_rewards.append(ep_reward)
-                    recent_successes.append(dominant_success)
+                    # dominant_action = int(np.argmax(ep_action_counts))
+                    # dominant_success = int(np.argmax(ep_terminated_count))
+                    # recent_actions.append(dominant_action)
+                    # recent_rewards.append(ep_reward)
+                    # recent_successes.append(dominant_success)
 
                     if eps_step==0:
                         loss = agent.train_step()
@@ -143,27 +148,25 @@ class BaseTrainer(ABC):
                             writer.add_scalar(f"Loss/Episode", loss, episode)
 
                     
-                    if self.config.useEarlyStop and earlyStopping is not None:
-                        if earlyStopping(ep_reward, agent, self.print):
-                            break
-                    
                     if episode % 500 == 0 and episode > 0:
                         checkpoint_path = f"{self.models_save_dir}/{agent.config.name}/{self.exec_date}/ep_{episode}.pth"
                         agent.save(checkpoint_path)
                     
                     writer.add_scalar("Policy/Epsilon/Episode",  agent.epsilon,              episode)
-                    writer.add_scalar("Action/Dominant/Episode",  dominant_action,            episode)
+                    # writer.add_scalar("Action/Dominant/Episode",  dominant_action,            episode)
 
                     writer.add_scalar("Steps/Episode",           ep_steps,                   episode)
+                    writer.add_scalar("Steps/Min/Episode",       min_steps,                  episode)
+                    writer.add_scalar("Steps/Ratio/Episode",     ep_steps/min_steps if min_steps>0 else 0, episode)
                     
-                    writer.add_scalar(f"Reward/Accumulated", ep_reward, episode)
+                    writer.add_scalar(f"Reward/Total", ep_reward, episode)
                     writer.add_scalar(f"Reward/Avg", ep_reward/ep_steps if ep_steps > 0 else 0, episode)
 
                     writer.add_scalar(f"Success/Episode", int(terminated), episode)
 
                     writer.add_scalar(f"Distances/Start", start_dist, episode)
-                    writer.add_scalar(f"Distances/End", state[-1][0], episode)
-                    writer.add_scalar(f"Distances/Change", start_dist - state[-1][0], episode)
+                    writer.add_scalar(f"Distances/End", state[-2], episode) # state[-1][0], episode)
+                    writer.add_scalar(f"Distances/Change", start_dist - state[-2], episode) # state[-1][0], episode)
                     
                     
 
@@ -175,19 +178,19 @@ class SingleTrainer(BaseTrainer):
     def __init__(self, logs_save_dir: str, models_save_dir: str, config: Optional[TrainerConfig] = None):
         super().__init__(logs_save_dir, models_save_dir, config)
 
-    @override
+    
     def add_environments(self, *envs: gym.Env):
         if len(self.envs) == 1 or len(envs) > 1:
             raise ValueError("SingleAgentSingleEnvironmentTrainer requires exactly one environment")
         return super().add_environments(*envs)
 
-    @override
+    
     def add_agents(self, *agents: BaseRLAgent):
         if len(self.agents) == 1 or  len(agents) > 1:
             raise ValueError("SingleAgentSingleEnvironmentTrainer requires exactly one agent")
         return super().add_agents(*agents)
 
-    @override
+    
     def train(self, num_episodes: Optional[int] = None, eps_step: Optional[int] = None):
         num_episodes = num_episodes or self.config.num_episodes
         eps_step = eps_step or self.config.eps_step
@@ -204,14 +207,14 @@ class MultiAgentTrainer(BaseTrainer):
     def __init__(self, logs_save_dir: str, models_save_dir: str, config: Optional[TrainerConfig] = None):
         super().__init__(logs_save_dir, models_save_dir, config)
     
-    @override
+    
     def add_environments(self, *envs: gym.Env):
         if len(self.envs) == 1 or len(envs) > 1:
             raise ValueError("MultiAgentTrainer allows only one environment")
         return super().add_environments(*envs)
 
     
-    @override
+    
     def train(self, num_episodes: Optional[int] = None, eps_step: Optional[int] = None):
         if len(self.envs) == 0 or len(self.agents) == 0:
             raise ValueError("One environment and at least one agent must be added before training")
@@ -237,14 +240,14 @@ class MultiEnvironmentTrainer(BaseTrainer):
     def __init__(self, logs_save_dir: str, models_save_dir: str, config: Optional[TrainerConfig] = None):
         super().__init__(logs_save_dir, models_save_dir, config)
 
-    @override
+    
     def add_agents(self, *agents: BaseRLAgent):
         if len(self.agents) == 1 or len(agents) > 1:
             raise ValueError("MultiEnvironmentTrainer allows only one agent")
         return super().add_agents(*agents)
     
 
-    @override
+    
     def train(self, num_episodes: Optional[int] = None, eps_step: Optional[int] = None):
         num_episodes = num_episodes or self.config.num_episodes
         eps_step = eps_step or self.config.eps_step
@@ -264,7 +267,7 @@ class MultiEnvironmentTrainer(BaseTrainer):
         else:
             self._inner_training(self.agents[0], None, num_episodes, eps_step)
     
-    @override
+    
     def _inner_training(self, agent: BaseRLAgent, env: Optional[gym.Env], num_episodes: int, eps_step: int):
         global_step = 0
         agent_id = id(agent)
@@ -360,7 +363,7 @@ class MultiTrainer(BaseTrainer):
     def __init__(self, logs_save_dir: str, models_save_dir: str, config: Optional[TrainerConfig] = None):
         super().__init__(logs_save_dir, models_save_dir, config)
 
-    @override
+    
     def train(self, num_episodes: int | None = None, eps_step: int | None = None):
         num_episodes = num_episodes or self.config.num_episodes
         eps_step = eps_step or self.config.eps_step

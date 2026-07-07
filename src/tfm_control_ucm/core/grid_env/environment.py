@@ -346,9 +346,9 @@ class Grid_Robot_Sections_Env(gym.Env):
         mean_dists = np.mean(obs[:-1, 0]) + 1e-6
 
         reward = -0.2 if len(self._previous_actions) > 0 and len(self._previous_actions[ self._previous_actions > 0 ]) > self._max_previous_actions/2 else -0.01
-        reward -= dist2goal/self._map_diagonal
-        reward -= self._map_diagonal/mean_dists
-        reward += (previous_dist2goal - dist2goal)/self._map_diagonal * 5
+        reward -= dist2goal/self._map_diagonal * 2
+        reward -= self._map_diagonal/(10 * mean_dists)
+        # reward += (previous_dist2goal - dist2goal)/self._map_diagonal * 5
 
         done = False
         if dist2goal < 1:

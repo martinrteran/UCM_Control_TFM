@@ -1,7 +1,7 @@
 from gc import get_debug
 
 import numpy as np
-from typing import Iterable, Tuple, Union, override
+from typing import Iterable, Tuple, Union
 
 import torch
 from turtledemo.chaos import distance
