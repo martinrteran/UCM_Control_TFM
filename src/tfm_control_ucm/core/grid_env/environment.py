@@ -369,6 +369,7 @@ class Grid_Robot_Sections_Env(gym.Env):
         if self.render_mode != 'human': return
         if not hasattr(self, "renderer"): self.renderer = PygameRenderer(self.map, cell_size=self.cell_size)
         dists = self._get_observation()
+        dists = dists.reshape((-1, 2))
         self.renderer.handle_events()
         self.renderer.render(self.robot, self.lidar,dists[:-1,:], self.goal_pos)
 

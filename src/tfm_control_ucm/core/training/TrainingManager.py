@@ -168,7 +168,30 @@ class BaseTrainer(ABC):
                     writer.add_scalar(f"Distances/End", state[-2], episode) # state[-1][0], episode)
                     writer.add_scalar(f"Distances/Change", start_dist - state[-2], episode) # state[-1][0], episode)
                     
-                    
+    def simulate(self, agent: BaseRLAgent, env: gym.Env, num_episodes: int = 10, render: bool = False):
+        """
+        Simulate the agent in the environment for a given number of episodes.
+        """
+        for episode in range(num_episodes):
+            state, _ = env.reset()
+            done = False
+            terminated = False
+            ep_steps = 0
+            ep_reward = 0
+
+            while not done:
+                action = agent.select_action(state, training=False)
+                next_state, reward, terminated, truncated, info = env.step(action)
+                done = terminated or truncated
+
+                ep_steps += 1
+                ep_reward += float(reward)
+                state = next_state
+                if render:
+                    env.render()
+
+            print(f"Episode {episode + 1}/{num_episodes} - Reward: {ep_reward:.2f} - Steps: {ep_steps}")
+
 
 class SingleTrainer(BaseTrainer):
     """
