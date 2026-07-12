@@ -36,6 +36,8 @@ class RLAlgorithm(Enum):
     TRPO = "trpo"
     TD3 = "td3"
     GRID_AGENT = "grid_agent"  # Custom agent for grid environments with recovery mechanisms
+    SIMPLE_Q_NETWORK = "simple_q_network"  # A simple Q-network for grid environments
+    CUSTOM = "custom"  # Placeholder for user-defined algorithms
 
 
 @dataclass

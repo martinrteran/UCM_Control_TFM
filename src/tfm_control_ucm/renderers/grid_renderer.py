@@ -93,7 +93,7 @@ class PygameRenderer:
         ec, er = end * self.cell_size + self.cell_size//2
         pygame.draw.line(self.screen, (255,0,0), (sc, sr), (ec, er), 2)
 
-    def draw_lidar(self, robot, lidar, distances):
+    def draw_lidar(self, robot, distances, num_sections):
         c, r = robot.position
         cx = c * self.cell_size + self.cell_size // 2
         cy = r * self.cell_size + self.cell_size // 2
@@ -111,16 +111,28 @@ class PygameRenderer:
                 (cx + dx, cy + dy),
                 2,
             )
+        
+        angle_per_section = 2*np.pi/num_sections;
+        start_angle = -angle_per_section/2;
+        for i in range(num_sections):
+            section_center = start_angle +  i * angle_per_section
+            pygame.draw.line(
+                self.screen,
+                (255, 0, 0),
+                (cx, cy),
+                (cx + np.cos(section_center) * self.cell_size * 10, cy - np.sin(section_center) * self.cell_size * 10),
+                1,
+            )
 
     # ------------------------------------------------------------
     # Main render function
     # ------------------------------------------------------------
-    def render(self, robot, lidar, distances, goal_position):
+    def render(self, robot, distances, num_sections, goal_position):
         self.screen.fill((0, 0, 0))
         self.draw_grid()
         
         self.draw_robot(robot)
-        self.draw_lidar(robot, lidar, distances)
+        self.draw_lidar(robot, distances, num_sections)
         self.draw_goal(goal_position)
         self.draw_vector(robot.position, goal_position)
 

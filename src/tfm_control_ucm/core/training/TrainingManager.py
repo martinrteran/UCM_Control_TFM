@@ -14,6 +14,7 @@ import gymnasium as gym
 import numpy as np
 import signal
 import sys
+from torch.distributed.argparse_util import env
 import tqdm
 
 from torch.utils.tensorboard import SummaryWriter
@@ -33,7 +34,7 @@ class TrainerConfig:
     useTQDM: bool = True # Whether to use tqdm progress bars
     useEarlyStop: bool = True # Whether to use early stopping
     num_episodes: int = 100_000 # Total number of episodes to train
-
+    render: bool = False # Whether to render the environment during training (may slow down training)
 
 
     # For multi-environment
@@ -118,8 +119,11 @@ class BaseTrainer(ABC):
                     start_pos = (int(start_pos[1]), int(start_pos[0]))
                     end_pos = (int(end_pos[1]), int(end_pos[0]))
                     min_steps = path_planner.min_steps(start=start_pos, goal=end_pos, method="wavefront") 
-
+                    if self.config.render:
+                        env.render()
                     while not done:
+                        if self.config.render:
+                            env.render()
                         action = agent.select_action(state)
                         next_state, reward, terminated, truncated, info = env.step(action)
                         done = terminated or truncated
@@ -135,6 +139,7 @@ class BaseTrainer(ABC):
                         global_step += 1
 
                         state = next_state
+                        
                  
                     # dominant_action = int(np.argmax(ep_action_counts))
                     # dominant_success = int(np.argmax(ep_terminated_count))
@@ -146,11 +151,6 @@ class BaseTrainer(ABC):
                         loss = agent.train_step()
                         if loss is not None:
                             writer.add_scalar(f"Loss/Episode", loss, episode)
-
-                    
-                    if episode % 500 == 0 and episode > 0:
-                        checkpoint_path = f"{self.models_save_dir}/{agent.config.name}/{self.exec_date}/ep_{episode}.pth"
-                        agent.save(checkpoint_path)
                     
                     writer.add_scalar("Policy/Epsilon/Episode",  agent.epsilon,              episode)
                     # writer.add_scalar("Action/Dominant/Episode",  dominant_action,            episode)
@@ -167,7 +167,9 @@ class BaseTrainer(ABC):
                     writer.add_scalar(f"Distances/Start", start_dist, episode)
                     writer.add_scalar(f"Distances/End", state[-2], episode) # state[-1][0], episode)
                     writer.add_scalar(f"Distances/Change", start_dist - state[-2], episode) # state[-1][0], episode)
-                    
+
+        checkpoint_path = f"{self.models_save_dir}/{agent.config.name}/final.pth"# {self.exec_date}
+        agent.save(checkpoint_path)
     def simulate(self, agent: BaseRLAgent, env: gym.Env, num_episodes: int = 10, render: bool = False):
         """
         Simulate the agent in the environment for a given number of episodes.

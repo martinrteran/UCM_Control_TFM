@@ -159,6 +159,8 @@ class GridLidar:
         # Aplicación estocástica en tiempo real
         if self.noise_std > 0:
             noise = torch.normal(0, self.noise_std, size=hit_distances.shape, device=self.device)
+            # The noise must be zero if there is no hit (i.e., distance == max_range)
+            noise = torch.where(hit_distances == float(self.max_range), torch.zeros_like(noise), noise)
             hit_distances = torch.clip(hit_distances + noise, 0.0, float(self.max_range))
 
         # Mantener formato matriz [distancia, ángulo]
