@@ -284,7 +284,7 @@ class Grid_Robot_Sections_Env(gym.Env):
         robot_obs = torch.tensor([self._dist_to_goal(), self._angle_to_goal()], device=device)
         
         # If the top_scanning is in the max_range +- the noise_std, then set the distance to -1.0 to indicate that there is no obstacle detected in that section
-        top_scanning[top_scanning[:, 0] ==self.lidar.max_range, 0] = float(-1)
+        # top_scanning[top_scanning[:, 0] ==self.lidar.max_range, 0] = float(-1)
         
 
         concated = torch.cat([top_scanning.flatten(), robot_obs])
@@ -347,11 +347,11 @@ class Grid_Robot_Sections_Env(gym.Env):
         
         dist2goal = obs[-1][0]
         
-        mean_dists = np.mean(obs[:-1, 0]) + 1e-6
+        mean_dists = np.mean(obs[:-1, 0])
 
         reward = -0.2 if len(self._previous_actions) > 0 and len(self._previous_actions[ self._previous_actions > 0 ]) > self._max_previous_actions/2 else -0.01
         reward -= dist2goal/self._map_diagonal * 10
-        reward -= self._map_diagonal/(10 * mean_dists)
+        reward -= self._map_diagonal/(10 * np.clip(mean_dists,1e-3,None))
         # reward += (previous_dist2goal - dist2goal)/self._map_diagonal * 5
 
         done = False
