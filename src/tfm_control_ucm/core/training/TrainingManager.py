@@ -57,8 +57,8 @@ class TrainerConfig:
         assert isinstance(self.useEarlyStop, bool), "useEarlyStop must be a boolean"
 
 class BaseTrainer(ABC):
-    envs: list[gym.Env] = []
-    agents: list[BaseRLAgent] = []
+    envs: list[gym.Env]
+    agents: list[BaseRLAgent]
     config: TrainerConfig
 
     """Abstract base class for trainers."""
@@ -69,6 +69,9 @@ class BaseTrainer(ABC):
         self.config = config or TrainerConfig()
         self.exec_date = time.strftime("%Y%m%d-%H%M%S")
         self.print = lambda msg: tqdm.tqdm.write(msg) if self.config.useTQDM else print(msg) # type: ignore
+
+        self.envs = []
+        self.agents = []
     
     def add_environments(self, *envs: gym.Env):
         if len(envs) == 0:
@@ -121,6 +124,7 @@ class BaseTrainer(ABC):
                     min_steps = path_planner.min_steps(start=start_pos, goal=end_pos, method="wavefront") 
                     if self.config.render:
                         env.render()
+                    loss = None
                     while not done:
                         if self.config.render:
                             env.render()
@@ -131,6 +135,8 @@ class BaseTrainer(ABC):
 
                         if ep_steps > 0 and eps_step>0 and ep_steps % eps_step == 0:
                             loss = agent.train_step()
+                            if loss is not None:
+                                writer.add_scalar(f"Loss/Global step", loss, global_step)
                         
                         ep_steps += 1
                         ep_reward += float(reward)
@@ -149,10 +155,12 @@ class BaseTrainer(ABC):
 
                     if eps_step==0:
                         loss = agent.train_step()
-                        if loss is not None:
-                            writer.add_scalar(f"Loss/Episode", loss, episode)
+                    
+                    if loss is not None:
+                        writer.add_scalar(f"Loss/Episode", loss, episode)
                     
                     writer.add_scalar("Policy/Epsilon/Episode",  agent.epsilon,              episode)
+                    writer.add_scalar("Policy/Epsilon/Global Step",  agent.epsilon,              global_step)
                     # writer.add_scalar("Action/Dominant/Episode",  dominant_action,            episode)
 
                     writer.add_scalar("Steps/Episode",           ep_steps,                   episode)

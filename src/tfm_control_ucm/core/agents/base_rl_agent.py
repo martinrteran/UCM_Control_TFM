@@ -177,7 +177,9 @@ class BaseRLAgent(ABC):
         dtype: torch.dtype = torch.float32,
     ) -> torch.Tensor:
         """Convert numpy array to tensor on device."""
-        return torch.tensor(data, dtype=dtype, device=self.device)
+        if isinstance(data, torch.Tensor):
+            return data.to(self.device, dtype=dtype)
+        return torch.as_tensor(data, dtype=dtype, device=self.device)
     
     def _clip_grad_norm(self):
         """Clip gradients for stability."""

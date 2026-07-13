@@ -233,7 +233,8 @@ class Grid_Robot_Sections_Env(gym.Env):
         self._map_diagonal = max_map_distance
 
         self.action_space = spaces.Discrete(3,dtype=np.int8) # One for move foward and bakward and another one for changing orientation
-        self.observation_space = spaces.Box( low=np.array([[-1, -np.pi]] * num_sections + [[0.0, -np.pi]]), high=np.array([[self._max_range, np.pi]] * num_sections + [[max_map_distance, np.pi]]))
+        self.observation_space = spaces.Box( low=np.array([[-1, -np.pi]] * num_sections + [[0.0, -np.pi]],dtype=np.float32),
+                        high=np.array([[self._max_range, np.pi]] * num_sections + [[max_map_distance, np.pi]], dtype=np.float32))
 
         self.steps = 0
         self.cell_size = cell_size
@@ -328,45 +329,63 @@ class Grid_Robot_Sections_Env(gym.Env):
 
         return obs, info
     
+    _safety_margin = 3.0       # lidar distance below which we start penalizing proximity
+    _max_proximity_penalty = 1.0
+    _stagnation_window = 8     # how many recent actions to check for spinning
+
     def step(self, action: int):
         self.steps += 1
-    
+
         previous_dist2goal = self._dist_to_goal()
         truncated = False
-        if action == 0: # Move foward
+        if action == 0:            # forward
             moved = self.robot.forward(self.map)
             truncated = not moved
-        elif action == 1: # Rotate left
+        elif action == 1:          # turn left
             self.robot.turn_left()
-        else:# elif action == 3: # Rotate right
-            self.robot.turn_right()            
+        else:                       # turn right
+            self.robot.turn_right()
 
         obs_flat = self._get_observation()
         obs = obs_flat.reshape((-1, 2))
         info = {}
-        
+
         dist2goal = obs[-1][0]
-        
-        mean_dists = np.mean(obs[:-1, 0])
+        min_dist = np.min(obs[:-1, 0][obs[:-1, 0] >= 0]) if np.any(obs[:-1, 0] >= 0) else self._max_range
 
-        reward = -0.2 if len(self._previous_actions) > 0 and len(self._previous_actions[ self._previous_actions > 0 ]) > self._max_previous_actions/2 else -0.01
-        reward -= dist2goal/self._map_diagonal * 10
-        reward -= self._map_diagonal/(10 * np.clip(mean_dists,1e-3,None))
-        # reward += (previous_dist2goal - dist2goal)/self._map_diagonal * 5
+        # 1. Progress toward goal — the dominant signal, bounded per-step
+        progress = (previous_dist2goal - dist2goal) / self._map_diagonal
+        reward = progress * 10.0
 
+        # 2. Small constant step cost so idling/short paths are preferred over long ones
+        reward -= 0.05
+
+        # 3. Bounded obstacle-proximity penalty — no division, no blow-up
+        if min_dist < self._safety_margin:
+            closeness = (self._safety_margin - min_dist) / self._safety_margin  # in [0, 1]
+            reward -= closeness * self._max_proximity_penalty
+
+        # 4. Anti-spinning penalty: check if recent actions are all turns with no net progress
+        self._previous_actions = np.append(self._previous_actions, action)
+        if len(self._previous_actions) > self._stagnation_window:
+            self._previous_actions = self._previous_actions[1:]
+
+        if len(self._previous_actions) == self._stagnation_window:
+            recent = self._previous_actions
+            no_forward = np.all(recent != 0)          # never moved forward
+            if no_forward:
+                reward -= 0.5                          # flat penalty for pure turning stretches
+
+        # 5. Terminal reward/penalty — clearly bigger than any step reward, but not extreme
         done = False
         if dist2goal < 1:
             done = True
-            reward = 100.0  # Big success reward
+            reward += 20.0
 
         truncated = truncated or bool(self.steps >= self.max_steps)
         if truncated:
-            reward -= 50.0
-        
-        self._previous_actions = np.append(self._previous_actions, action)
-        if len(self._previous_actions) > self._max_previous_actions: # Keep only the last 5 actions
-            self._previous_actions = self._previous_actions[1:]
-        
+            reward -= 5.0
+
         return obs_flat, reward, done, truncated, info
     
     def render(self):

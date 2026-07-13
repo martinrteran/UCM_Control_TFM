@@ -126,23 +126,23 @@ class ReplayBuffer:
         """Sample random batch from buffer."""
         indices = np.random.choice(len(self.buffer), batch_size, replace=False)
         states, actions, rewards, next_states, dones = zip(*[self.buffer[i] for i in indices])
+
+        states = np.asarray(states, dtype=np.float32)
+        actions = np.asarray(actions, dtype=np.int64)
+        rewards = np.asarray(rewards, dtype=np.float32)
+        next_states = np.asarray(next_states, dtype=np.float32)
+        dones = np.asarray(dones, dtype=np.bool_)
         
         if self.device != torch.device("cpu"):
             return (
-                torch.tensor(states, dtype=torch.float32, device=self.device),
-                torch.tensor(actions, dtype=torch.int64, device=self.device),
-                torch.tensor(rewards, dtype=torch.float32, device=self.device),
-                torch.tensor(next_states, dtype=torch.float32, device=self.device),
-                torch.tensor(dones, dtype=torch.bool, device=self.device),
+                torch.from_numpy(states).to(self.device, torch.float32),
+                torch.from_numpy(actions).to(self.device, torch.float32),
+                torch.from_numpy(rewards).to(self.device, torch.float32),
+                torch.from_numpy(next_states).to(self.device, torch.float32),
+                torch.from_numpy(dones).to(self.device, torch.float32),
             )
         else:
-            return (
-                np.array(states, dtype=np.float32),
-                np.array(actions, dtype=np.int64),
-                np.array(rewards, dtype=np.float32),
-                np.array(next_states, dtype=np.float32),
-                np.array(dones, dtype=np.bool_),
-            )
+            return states, actions, rewards, next_states, dones
     
     def __len__(self):
         return len(self.buffer)
