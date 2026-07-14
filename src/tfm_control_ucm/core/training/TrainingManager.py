@@ -234,79 +234,123 @@ class SingleTrainer(BaseTrainer):
         super()._inner_training(self.agents[0], self.envs[0], num_episodes, eps_step)
 
 class PPOTrainer(BaseTrainer):
-    def train(self, num_episodes: Optional[int] = 1000, eps_step: Optional[int] = None):
+    def train(self, num_episodes: Optional[int] = None, eps_step: Optional[int] = None):
+
+        global_step = 0
+
         agent = self.agents[0]
         env = self.envs[0]
+
+
         num_episodes = num_episodes or self.config.num_episodes
+        episodes = tqdm.tqdm(range(num_episodes),desc="Training") if self.config.useTQDM else range(num_episodes)
         eps_step = eps_step or self.config.eps_step
+        
+        path_planner = PathPlanner(env.map.grid) # type: ignore
+        with SummaryWriter(log_dir=f"{self.logs_save_dir}/{agent.config.name}") as writer:
+            with InterruptHandler(agent, writer,f"{self.models_save_dir}/{agent.config.name}") as handler:
+                for episode in episodes:
+                    state, _ = env.reset()
 
-        for episode in range(num_episodes):
-            state, _ = env.reset()
+                    states = []
+                    actions = []
+                    rewards = []
+                    dones = []
+                    values = []
+                    log_probs = []
 
-            states = []
-            actions = []
-            rewards = []
-            dones = []
-            values = []
-            log_probs = []
+                    done = False
+                    terminated= False
 
-            done = False
+                    start_dist = state[-2] # state[-1][0]
+                    start_pos = env.robot.position# type: ignore
+                    end_pos = env.goal_pos# type: ignore
+                    start_pos = (int(start_pos[1]), int(start_pos[0]))
+                    end_pos = (int(end_pos[1]), int(end_pos[0]))
+                    min_steps = path_planner.min_steps(start=start_pos, goal=end_pos, method="wavefront") 
+                    if self.config.render:
+                        env.render()
+                    
+                    loss = None
+                    info = {}
 
-            while not done:
-                # 1. Value
-                value = agent.value_network(agent._to_tensor(state).unsqueeze(0)).item()
-                values.append(value)
+                    while not done:
+                        # 1. Value
+                        value = agent.value_net(agent._to_tensor(state)).item()
+                        values.append(value)
 
-                # 2. Action
-                action = agent.select_action(state, training=True)
+                        # 2. Action
+                        action = agent.select_action(state, training=True)
 
-                # 3. Log prob
-                logits = agent.policy_network(agent._to_tensor(state).unsqueeze(0))
-                dist = torch.distributions.Categorical(logits=logits)
-                log_prob = dist.log_prob(torch.tensor(action, device=agent.device)).item()
+                        # 3. Log prob
+                        logits = agent.policy_net(agent._to_tensor(state))
+                        dist = torch.distributions.Categorical(logits=logits)
+                        log_prob = dist.log_prob(torch.tensor(action, device=agent.device)).item()
 
-                # 4. Step
-                next_state, reward, terminated, truncated, info = env.step(action)
-                done = terminated or truncated
+                        # 4. Step
+                        next_state, reward, terminated, truncated, info = env.step(action)
+                        done = terminated or truncated
 
-                # 5. Store
-                states.append(state)
-                actions.append(action)
-                rewards.append(reward)
-                dones.append(done)
-                log_probs.append(log_prob)
+                        # 5. Store
+                        states.append(state)
+                        actions.append(action)
+                        rewards.append(reward)
+                        dones.append(done)
+                        log_probs.append(log_prob)
 
-                state = next_state
+                        state = next_state
 
-            # Final value
-            last_value = agent.value_network(agent._to_tensor(state).unsqueeze(0)).item()
-            values.append(last_value)
+                    # Final value
+                    last_value = agent.value_net(agent._to_tensor(state).unsqueeze(0)).item()
+                    values.append(last_value)
 
-            # GAE
-            advantages, returns = compute_gae(
-                rewards=np.array(rewards),
-                values=np.array(values),
-                dones=np.array(dones),
-                gamma=agent.gamma,
-                lam=agent.lam
-            )
+                    # GAE
+                    advantages, returns = compute_gae(
+                        rewards=np.array(rewards),
+                        values=np.array(values),
+                        dones=np.array(dones),
+                        gamma=agent.gamma,
+                        lam=agent.lam
+                    )
 
-            # Store PPO transitions
-            for t in range(len(states)):
-                agent.buffer.add(
-                    states[t],
-                    actions[t],
-                    rewards[t],
-                    states[t+1] if t < len(states)-1 else state,
-                    dones[t],
-                    log_probs[t],
-                    advantages[t],
-                    returns[t]
-                )
+                    # Store PPO transitions
+                    for t in range(len(states)):
+                        agent.buffer.add(
+                            states[t],
+                            actions[t],
+                            rewards[t],
+                            states[t+1] if t < len(states)-1 else state,
+                            dones[t],
+                            log_probs[t],
+                            advantages[t],
+                            returns[t]
+                        )
 
-            # Train PPO
-            loss = agent.train_step()
-            print(f"Episode {episode} - Loss: {loss}")
+                    # Train PPO
+                    loss = agent.train_step()
+                    if loss is not None:
+                        writer.add_scalar(f"Loss/Episode", loss, episode)
+                    ep_steps = len(states)
+
+                    writer.add_scalar("Value/Episode", last_value, episode)
+
+                    writer.add_scalar("Steps/Episode",           ep_steps,                   episode)
+                    writer.add_scalar("Steps/Min/Episode",       min_steps,                  episode)
+                    writer.add_scalar("Steps/Ratio/Episode",     ep_steps/min_steps if min_steps>0 else 0, episode)
+                    
+                    ep_reward = sum(rewards)
+                    writer.add_scalar(f"Reward/Total", ep_reward, episode)
+
+                    writer.add_scalar(f"Done/Success", int(terminated), episode)
+                    writer.add_scalar(f"Done/Max Steps Reached", info.get('max_steps_reached', False), episode)
+                    writer.add_scalar(f"Done/Hit Obstacle", info.get('hit_obstacle', False), episode)
+
+                    writer.add_scalar(f"Distances/Start", start_dist, episode)
+                    writer.add_scalar(f"Distances/End", state[-2], episode) # state[-1][0], episode)
+                    writer.add_scalar(f"Distances/Change", start_dist - state[-2], episode) # state[-1][0], episode)
+        
+        checkpoint_path = f"{self.models_save_dir}/{agent.config.name}/final.pth"# {self.exec_date}
+        agent.save(checkpoint_path)
 
 class MultiAgentTrainer(BaseTrainer):
     """

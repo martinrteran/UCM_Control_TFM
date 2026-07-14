@@ -69,12 +69,12 @@ class PygameRenderer:
         )
         pygame.draw.rect(self.screen, self.robot_color, rect)
         
-        c = c * self.cell_size + self.cell_size//2
-        r = r * self.cell_size + self.cell_size//2
-        ce = c + np.cos(robot.ORIENTATIONS[robot.orientation]['angle']) * self.cell_size*2
-        re = r - np.sin(robot.ORIENTATIONS[robot.orientation]['angle']) * self.cell_size*2
+        # c = c * self.cell_size + self.cell_size//2
+        # r = r * self.cell_size + self.cell_size//2
+        # ce = c + np.cos(robot.ORIENTATIONS[robot.orientation]['angle']) * self.cell_size*2
+        # re = r - np.sin(robot.ORIENTATIONS[robot.orientation]['angle']) * self.cell_size*2
 
-        pygame.draw.line(self.screen,(0,150,0),(c,r), (ce,re), 3)
+        # pygame.draw.line(self.screen,(0,150,0),(c,r), (ce,re), 3)
     
     def draw_goal(self, goal_position):
         c, r = goal_position

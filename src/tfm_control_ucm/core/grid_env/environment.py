@@ -222,7 +222,7 @@ class Grid_Robot_Sections_Env(gym.Env):
         max_map_distance = np.sqrt(np.sum(np.array(self.map.grid.shape) **2))
         self._map_diagonal = max_map_distance
 
-        self.action_space = spaces.Discrete(3,dtype=np.int8) # One for move foward and bakward and another one for changing orientation
+        self.action_space = spaces.Discrete(4,start=0,dtype=np.int8) # One for move foward and bakward and another one for changing orientation
         self.observation_space = spaces.Box( low=np.array([[-1, -np.pi]] * num_sections + [[0.0, -np.pi]],dtype=np.float32),
                         high=np.array([[self._max_range, np.pi]] * num_sections + [[max_map_distance, np.pi]], dtype=np.float32))
 
@@ -332,7 +332,7 @@ class Grid_Robot_Sections_Env(gym.Env):
 
         obs_flat = self._get_observation()
         obs = obs_flat.reshape((-1, 2))
-        info = {}
+        
 
         dist2goal = obs[-1][0]
         min_dist = np.min(obs[:-1, 0][obs[:-1, 0] >= 0]) if np.any(obs[:-1, 0] >= 0) else self._max_range
@@ -358,6 +358,8 @@ class Grid_Robot_Sections_Env(gym.Env):
         truncated = truncated or bool(self.steps >= self.max_steps)
         if truncated:
             reward -= 5.0
+        
+        info = {'max_steps_reached': self.steps >= self.max_steps, 'hit_obstacle': not moved, 'min_dist': min_dist, 'dist2goal': dist2goal, 'progress': progress}
 
         return obs_flat, reward, done, truncated, info
     

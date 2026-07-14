@@ -26,15 +26,15 @@ rl_config = PPOConfig(obs_dim=obv_dim, action_dim=action_dim, algorithm=RLAlgori
 policy_net = SimpleQNetwork(obs_dim=obv_dim, action_dim=action_dim, num_hidden_layers=2, hidden_dim=64).to(device)
 target_net = ValueNetwork(obs_dim=obv_dim, hidden_dim=64).to(device)
 agent = PPOAgent(rl_config, policy_network = policy_net, value_network = target_net)
-agent.load(rf"./checkpoints/Test/14/PPO_1/PPO Agent/1000.pth")
+agent.load(rf"./checkpoints/Test/14/PPO_1/PPO Agent 2/final.pth")
 
 t_config = training_manager.TrainerConfig(
     eps_step=4,
     num_episodes=3000,
-    render=False
+    render=True
 )
-singleTrainer = training_manager.PPOTrainer("./runs/Test/14/PPO_1","./checkpoints/Test/14/PPO_1",t_config)
+singleTrainer = training_manager.PPOTrainer("./runs/Test/14/PPO_2","./checkpoints/Test/14/PPO_2",t_config)
 singleTrainer.add_agents(agent)
 singleTrainer.add_environments(env)
 
-singleTrainer.train()
+singleTrainer.simulate(agent,env,100,True)
