@@ -14,7 +14,8 @@ import gymnasium as gym
 import numpy as np
 import signal
 import sys
-from torch.distributed.argparse_util import env
+import torch
+
 import tqdm
 
 from torch.utils.tensorboard import SummaryWriter
@@ -22,7 +23,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tfm_control_ucm.core.training.utils import InterruptHandler, EarlyStopping
 from ...utils.path_planner import PathPlanner, TorchPathPlanner
 
-from ..agents.base_rl_agent import BaseRLAgent
+from ..agents.base_rl_agent import BaseRLAgent, compute_gae
 
 
 @dataclass
@@ -131,6 +132,7 @@ class BaseTrainer(ABC):
                         action = agent.select_action(state)
                         next_state, reward, terminated, truncated, info = env.step(action)
                         done = terminated or truncated
+
                         agent.store(state, action, reward, next_state, done)
 
                         if ep_steps > 0 and eps_step>0 and ep_steps % eps_step == 0:
@@ -230,6 +232,81 @@ class SingleTrainer(BaseTrainer):
         if len(self.envs) == 0 or len(self.agents) == 0:
             raise ValueError("One environment and one agent must be added before training")
         super()._inner_training(self.agents[0], self.envs[0], num_episodes, eps_step)
+
+class PPOTrainer(BaseTrainer):
+    def train(self, num_episodes: Optional[int] = 1000, eps_step: Optional[int] = None):
+        agent = self.agents[0]
+        env = self.envs[0]
+        num_episodes = num_episodes or self.config.num_episodes
+        eps_step = eps_step or self.config.eps_step
+
+        for episode in range(num_episodes):
+            state, _ = env.reset()
+
+            states = []
+            actions = []
+            rewards = []
+            dones = []
+            values = []
+            log_probs = []
+
+            done = False
+
+            while not done:
+                # 1. Value
+                value = agent.value_network(agent._to_tensor(state).unsqueeze(0)).item()
+                values.append(value)
+
+                # 2. Action
+                action = agent.select_action(state, training=True)
+
+                # 3. Log prob
+                logits = agent.policy_network(agent._to_tensor(state).unsqueeze(0))
+                dist = torch.distributions.Categorical(logits=logits)
+                log_prob = dist.log_prob(torch.tensor(action, device=agent.device)).item()
+
+                # 4. Step
+                next_state, reward, terminated, truncated, info = env.step(action)
+                done = terminated or truncated
+
+                # 5. Store
+                states.append(state)
+                actions.append(action)
+                rewards.append(reward)
+                dones.append(done)
+                log_probs.append(log_prob)
+
+                state = next_state
+
+            # Final value
+            last_value = agent.value_network(agent._to_tensor(state).unsqueeze(0)).item()
+            values.append(last_value)
+
+            # GAE
+            advantages, returns = compute_gae(
+                rewards=np.array(rewards),
+                values=np.array(values),
+                dones=np.array(dones),
+                gamma=agent.gamma,
+                lam=agent.lam
+            )
+
+            # Store PPO transitions
+            for t in range(len(states)):
+                agent.buffer.add(
+                    states[t],
+                    actions[t],
+                    rewards[t],
+                    states[t+1] if t < len(states)-1 else state,
+                    dones[t],
+                    log_probs[t],
+                    advantages[t],
+                    returns[t]
+                )
+
+            # Train PPO
+            loss = agent.train_step()
+            print(f"Episode {episode} - Loss: {loss}")
 
 class MultiAgentTrainer(BaseTrainer):
     """

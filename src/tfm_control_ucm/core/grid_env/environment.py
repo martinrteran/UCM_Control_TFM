@@ -43,14 +43,14 @@ class Grid_Robot_Env(gym.Env):
     
     def __init__(self, *,
                 map: GridMap,
-                robot: GridRobot,
+                robot: GridRobotNotTurning,
                 lidar_config: Optional[Dict] = None,
                 max_iteration_steps: Union[int,np.integer] = 10_000,
                 render_mode: Optional[str] = None,
                 cell_size: int = 32
                 ) -> None:
         if not isinstance(map, GridMap): raise TypeError("The map must be of type GridMap")
-        if not isinstance(robot, GridRobot): raise TypeError("The robot must be of type GridRobot")
+        if not isinstance(robot, GridRobotNotTurning): raise TypeError("The robot must be of type GridRobotNotTurning")
         if lidar_config: 
             if any(key not in GridLidar.config_keys() for key in lidar_config.keys()): raise ValueError(f"One of the configuration keys for the lidar is not correct. The configuration keys are: {', '.join(GridLidar.config_keys())}")
             elif lidar_config['num_rays'] < self._min_num_rays: raise ValueError(f"The field 'num_rays' (number of rays) must be greater or equal to {self._min_num_rays}")
@@ -89,7 +89,7 @@ class Grid_Robot_Env(gym.Env):
         return self.action_space.shape
 
     def _get_observation(self):
-        scanning = self.lidar.scan(self.map, self.robot.position, self.robot.ORIENTATIONS[self.robot.orientation]['angle'])
+        scanning = self.lidar.scan(self.map, self.robot.position, np.asarray(0.0))
         
         idx = np.argsort(scanning[:,0])
         scanning = scanning[idx[::-1]] # descending order
@@ -115,9 +115,8 @@ class Grid_Robot_Env(gym.Env):
         while not isCorrect:
             r = np.random.randint(0,height)
             c = np.random.randint(0,width)
-            orien = self.robot.ORIENTATIONS_LIST[np.random.randint(0,4)]
             if self.map.is_free(r, c):
-                self.robot.reset((c,r),orien)
+                self.robot.reset((c,r))
                 isCorrect = True
         
         isCorrect = False
@@ -141,17 +140,8 @@ class Grid_Robot_Env(gym.Env):
         self.steps += 1
     
         previous_dist2goal = self._dist_to_goal()
-        truncated = False
-        if action == 0: # Move foward
-            moved = self.robot.forward(self.map)
-            truncated = not moved
-        # elif action == [-1,0]: # Move backward
-        #     moved = self.robot.backward(self.map)
-        #     terminated = not moved
-        elif action == 1: # Rotate left
-            self.robot.turn_left()
-        else:# elif action == 3: # Rotate right
-            self.robot.turn_right()            
+        moved = self.robot.move(self.map, action)
+        truncated = not moved
 
         obs = self._get_observation()
         info = {}
@@ -202,7 +192,7 @@ class Grid_Robot_Sections_Env(gym.Env):
     
     def __init__(self, *,
                 map: GridMap,
-                robot: GridRobot,
+                robot: GridRobotNotTurning,
                 lidar_config: Optional[Dict] = None,
                 max_iteration_steps: Union[int,np.integer] = 10_000,
                 render_mode: Optional[str] = None,
@@ -210,7 +200,7 @@ class Grid_Robot_Sections_Env(gym.Env):
                 num_sections: int = _min_num_sections
                 ) -> None:
         if not isinstance(map, GridMap): raise TypeError("The map must be of type GridMap")
-        if not isinstance(robot, GridRobot): raise TypeError("The robot must be of type GridRobot")
+        if not isinstance(robot, GridRobotNotTurning): raise TypeError("The robot must be of type GridRobotNotTurning")
         if num_sections < self._min_num_sections and num_sections%4 != 0: raise ValueError(f"The number of sections must be greater or equal to {self._min_num_sections} and a multiple of 4")
 
         if lidar_config: 
@@ -257,7 +247,7 @@ class Grid_Robot_Sections_Env(gym.Env):
 
     def _get_observation(self):
         # scanning is (N, 2) tensor: [dist, angle]
-        scanning = self.lidar.scan(self.map, self.robot.position, self.robot.ORIENTATIONS[self.robot.orientation]['angle'])
+        scanning = self.lidar.scan(self.map, self.robot.position, np.asarray(0.0)) # We don't need the robot orientation for this environment, we just need the angles of the rays
 
         angles = scanning[:, 1]
         # Normalize angles to (-pi, pi]
@@ -306,9 +296,8 @@ class Grid_Robot_Sections_Env(gym.Env):
         while not isCorrect:
             r = np.random.randint(0,height)
             c = np.random.randint(0,width)
-            orien = self.robot.ORIENTATIONS_LIST[np.random.randint(0,4)]
             if self.map.is_free(r, c):
-                self.robot.reset((c,r),orien)
+                self.robot.reset((c,r))
                 isCorrect = True
         
         isCorrect = False
@@ -337,14 +326,9 @@ class Grid_Robot_Sections_Env(gym.Env):
         self.steps += 1
 
         previous_dist2goal = self._dist_to_goal()
-        truncated = False
-        if action == 0:            # forward
-            moved = self.robot.forward(self.map)
-            truncated = not moved
-        elif action == 1:          # turn left
-            self.robot.turn_left()
-        else:                       # turn right
-            self.robot.turn_right()
+        moved = self.robot.move(self.map, action)
+        truncated = not moved
+
 
         obs_flat = self._get_observation()
         obs = obs_flat.reshape((-1, 2))
@@ -364,17 +348,6 @@ class Grid_Robot_Sections_Env(gym.Env):
         if min_dist < self._safety_margin:
             closeness = (self._safety_margin - min_dist) / self._safety_margin  # in [0, 1]
             reward -= closeness * self._max_proximity_penalty
-
-        # 4. Anti-spinning penalty: check if recent actions are all turns with no net progress
-        self._previous_actions = np.append(self._previous_actions, action)
-        if len(self._previous_actions) > self._stagnation_window:
-            self._previous_actions = self._previous_actions[1:]
-
-        if len(self._previous_actions) == self._stagnation_window:
-            recent = self._previous_actions
-            no_forward = np.all(recent != 0)          # never moved forward
-            if no_forward:
-                reward -= 0.5                          # flat penalty for pure turning stretches
 
         # 5. Terminal reward/penalty — clearly bigger than any step reward, but not extreme
         done = False
@@ -577,197 +550,3 @@ class Grid_Robot_Env_Image_lidar(gym.Env):
         
         self.renderer.handle_events()
         self.renderer.render(self.robot, self.lidar, lidar_image, self.goal_pos)
-
-
-class GridRobotSections_Env(gym.Env):
-    """
-    Docstring for Robot_Grid_Env
-    
-    """
-    metadata = {"render_modes": ["human"], "render_fps": 10}
-    _min_num_rays = 12
-    _min_num_sections = 4
-    _max_noise_std = 0.5
-    _max_range = 100
-    _min_separation_distance = 10
-    _max_previous_actions = 5
-    _previous_actions: np.ndarray = np.array([])
-    
-    def __init__(self, *,
-                map: GridMap,
-                robot: GridRobotNotTurning,
-                lidar_config: Optional[Dict] = None,
-                max_iteration_steps: Union[int,np.integer] = 10_000,
-                render_mode: Optional[str] = None,
-                cell_size: int = 32,
-                num_sections: int = _min_num_sections,
-                device: Union[str,torch.device] = "cpu"
-                ) -> None:
-        if not isinstance(map, GridMap): raise TypeError("The map must be of type GridMap")
-        if not isinstance(robot, GridRobotNotTurning): raise TypeError("The robot must be of type GridRobotNotTurning")
-        if num_sections < self._min_num_sections and num_sections%4 != 0: raise ValueError(f"The number of sections must be greater or equal to {self._min_num_sections} and a multiple of 4")
-        
-        if lidar_config: 
-            if any(key not in GridLidar.config_keys() for key in lidar_config.keys()): raise ValueError(f"One of the configuration keys for the lidar is not correct. The configuration keys are: {', '.join(GridLidar.config_keys())}")
-            elif lidar_config['num_rays'] < self._min_num_rays: raise ValueError(f"The field 'num_rays' (number of rays) must be greater or equal to {self._min_num_rays}")
-            elif lidar_config['max_range'] > self._max_range: raise ValueError(f"The field 'max_range' (maximum detection distance) must be less or equal to {self._max_range}")
-            elif lidar_config['noise_std'] > self._max_noise_std: raise ValueError(f"The field 'noise_std' (maximum noise standard deviation) must be less or equal to {self._max_noise_std}")
-        
-        super().__init__()
-        self.map = map
-        self.robot = robot
-        self.device = torch.device(device) if isinstance(device, str) else device
-        
-        if not lidar_config:
-            self.lidar = GridLidar(num_rays=self._min_num_rays, max_range=self._max_range, noise_std=self._max_noise_std, with_cache=True, device=self.device)
-        else:
-            self.lidar = GridLidar(**lidar_config)
-        self.max_steps = max_iteration_steps
-        self.render_mode = render_mode
-        
-        max_map_distance = torch.tensor(np.sqrt(np.sum(np.array(self.map.grid.shape) **2)))
-        self._map_diagonal = max_map_distance
-
-        self.action_space = spaces.Discrete(4,dtype=np.int8) # One for move foward and bakward and another one for changing orientation
-        self.observation_space = spaces.Box( low=np.array([[-1, -np.pi]] * num_sections + [[0.0, -np.pi]]), high=np.array([[self._max_range, np.pi]] * num_sections + [[max_map_distance, np.pi]]))
-
-        self.steps = 0
-        self.cell_size = cell_size
-        self.num_sections = num_sections
-
-        self._angle_per_section = 2*np.pi/num_sections;
-        self._start_angle = -self._angle_per_section/2;
-    
-    def get_observation_shape(self):
-        return self.observation_space.shape
-    
-    def get_observation_dim(self):
-        return np.prod(self.observation_space.shape) # type: ignore
-    
-    def get_action_dim(self):
-        return self.action_space.n # type: ignore
-    
-    def get_action_shape(self):
-        return self.action_space.shape
-
-    def _get_observation(self) -> Dict[str, torch.Tensor]:
-        scanning = self.lidar.scan(self.map, self.robot.position, self.robot.ORIENTATIONS[self.robot.orientation]['angle'])
-
-        angles = scanning[:, 1]
-        # Normalize angles to (-pi, pi]
-        angles = torch.atan2(torch.sin(angles), torch.cos(angles))
-        
-        top_scanning = torch.full((self.num_sections, 2), -1.0, device=self.device)
-        
-        # Robust sectioning logic using modular arithmetic
-        for i in range(self.num_sections):
-            section_center = self._start_angle + (i + 0.5) * self._angle_per_section
-            
-            # Difference between ray angle and section center, wrapped to (-pi, pi]
-            angle_diff = torch.atan2(torch.sin(angles - section_center), torch.cos(angles - section_center))
-            in_section = torch.abs(angle_diff) <= (self._angle_per_section / 2.0)
-            
-            if torch.any(in_section):
-                section_rays = scanning[in_section]
-                closest_idx = torch.argmin(section_rays[:, 0])
-                top_scanning[i, :] = section_rays[closest_idx, :]
-            else:
-                top_scanning[i, 0] = float(self.lidar.max_range)
-                top_scanning[i, 1] = float(section_center)
-        
-        robot_obs = torch.tensor([self._dist_to_goal(), self._angle_to_goal()], device=self.device)
-        
-        return {'lidar': top_scanning, 'robot': robot_obs}
-
-    def _dist_to_goal(self):
-        return np.sqrt(np.sum((self.goal_pos - self.robot.position)**2))    
-    
-    def _angle_to_goal(self):
-        x_diff, y_diff = self.goal_pos - self.robot.position
-        return np.atan2(y_diff, x_diff)
-    
-    def reset(self, *, seed=None, options=None):
-        super().reset(seed=seed)
-
-        height, width = self.map.grid.shape
-        isCorrect = False
-        while not isCorrect:
-            r = np.random.randint(0,height)
-            c = np.random.randint(0,width)
-            orien = self.robot.ORIENTATIONS_LIST[np.random.randint(0,4)]
-            if self.map.is_free(r, c):
-                self.robot.reset((c,r),orien)
-                isCorrect = True
-        
-        isCorrect = False
-        while not isCorrect:
-            r = np.random.randint(0,height)
-            c = np.random.randint(0,width)
-            self.goal_pos = np.array([c,r])
-            dist_to_robot = self._dist_to_goal()
-            if self.map.is_free(r, c) and dist_to_robot > self._min_separation_distance:
-                isCorrect = True
-
-        self.steps = 0
-        self.previous_action = -1 # Do nothing
-
-        obs = self._get_observation()
-        lidar = obs["lidar"]
-        robot_obs = obs["robot"]
-        info = {}
-        self._previous_actions = np.array([]) # Empty it
-
-        return torch.vstack([lidar, robot_obs]).reshape((self.get_observation_dim(),)), info
-    
-    def step(self, action: int):
-        self.steps += 1
-    
-        previous_dist2goal = self._dist_to_goal()
-        truncated = False
-        direction = ""
-        match action:
-            case 0:
-                direction = "forward"
-            case 1:
-                direction = "right"
-            case 2:
-                direction = "backward"
-            case 3:
-                direction = "left"
-
-        moved = self.robot.move(self.map, direction)
-        truncated = not moved
-
-        obs = self._get_observation()
-        lidar = obs["lidar"]
-        robot_obs = obs["robot"]
-        info = {}
-        
-        dist2goal = robot_obs[0]
-        
-        reward = -dist2goal/self._map_diagonal
-        reward -= self._map_diagonal/(torch.min(lidar[:,0]) + 1e-6)
-#        reward += (previous_dist2goal - dist2goal)/self._map_diagonal * 5
-
-        done = False
-        if dist2goal < 1:
-            done = True
-            reward = 100.0  # Big success reward
-
-        truncated = truncated or bool(self.steps >= self.max_steps)
-        if truncated:
-            reward -= 50.0
-        
-        self._previous_actions = np.append(self._previous_actions, action)
-        if len(self._previous_actions) > self._max_previous_actions: # Keep only the last 5 actions
-            self._previous_actions = self._previous_actions[1:]
-        
-        return torch.vstack([lidar, robot_obs]).reshape((self.get_observation_dim(),)), reward, done, truncated, info
-    
-    def render(self):
-        if self.render_mode != 'human': return
-        if not hasattr(self, "renderer"): self.renderer = PygameRenderer(self.map, cell_size=self.cell_size)
-        obs = self._get_observation()
-        dists = obs["lidar"]
-        self.renderer.handle_events()
-        self.renderer.render(self.robot, self.lidar,dists, self.goal_pos)

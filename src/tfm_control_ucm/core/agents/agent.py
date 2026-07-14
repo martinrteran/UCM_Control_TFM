@@ -12,10 +12,8 @@ Actions:
 Author: Martin
 """
 
-from copy import deepcopy
 import os
 from typing import Optional, Tuple
-from venv import create
 import numpy as np
 import torch.nn as nn
 import torch
@@ -23,9 +21,9 @@ from torch import optim
 
 from .utils import RLAlgorithm
 
-from .networks import CreateNetwork, GridAgentNet, PolicyNetwork, ValueNetwork, SimpleQNetwork
+from .networks import  GridAgentNet, PolicyNetwork, ValueNetwork, SimpleQNetwork
 
-from .base_rl_agent import BaseRLAgent, RLConfig
+from .base_rl_agent import BaseRLAgent, RLConfig, compute_gae
 import random
 
 from torchrl.data import ListStorage, ReplayBuffer, LazyTensorStorage
@@ -1008,6 +1006,237 @@ class A2CAgent(BaseRLAgent):
         
         return total_loss
     
+
+
+class PPOAgent(BaseRLAgent):
+    """
+    Proximal Policy Optimization (PPO) agent implementation.
+
+    Parameters
+    ----------
+    config : RLConfig
+        Configuration with algorithm=RLAlgorithm.PPO
+    policy_network : nn.Module, optional
+        Policy (actor) network
+    value_network : nn.Module, optional
+        Value (critic) network
+    """
+
+    def __init__(
+        self,
+        config: RLConfig,
+        policy_network: Optional[nn.Module] = None,
+        value_network: Optional[nn.Module] = None,
+        **kwargs
+    ):
+        super().__init__(
+            config=config,
+            policy_network=policy_network,
+            value_network=value_network,
+            **kwargs
+        )
+
+        self.clip_eps = config.clip_eps
+        self.entropy_coeff = config.entropy_coeff
+        self.value_coeff = getattr(config, "value_coeff", 0.5)
+        self.gamma = config.gamma
+        self.lam = getattr(config, "gae_lambda", 0.95)
+
+    def _initialize_networks(self, hidden_dim: int = 128, **kwargs):
+        """Initialize policy and value networks if not provided."""
+        self.policy_net = PolicyNetwork(
+            self.config.obs_dim,
+            self.config.action_dim,
+            hidden_dim=hidden_dim
+        )
+        self.value_net = ValueNetwork(
+            self.config.obs_dim,
+            hidden_dim=hidden_dim
+        )
+
+    def select_action(self, state: np.ndarray, training: bool = True) -> int:
+        """Select action from policy distribution (stochastic in training, greedy in eval)."""
+        self.global_step += 1
+
+        state_t = self._to_tensor(state).unsqueeze(0)
+        logits_or_probs = self.policy_net(state_t)
+
+        # Asumiendo que PolicyNetwork devuelve logits; si devuelve probs, cambia a probs=...
+        dist = torch.distributions.Categorical(logits=logits_or_probs)
+
+        if training:
+            action = dist.sample()
+        else:
+            action = torch.argmax(logits_or_probs, dim=-1)
+
+        self.last_log_prob = dist.log_prob(action).detach()
+        return int(action.item())
+
+    def _compute_loss(self, batch: Tuple) -> torch.Tensor:
+        """
+        Compute PPO loss from batch:
+        batch = (states, actions, rewards, next_states, dones, old_log_probs, advantages, returns)
+        """
+        (states, actions, rewards, next_states,
+         dones, old_log_probs, advantages, returns) = batch
+
+        states_t = self._to_tensor(states)
+        actions_t = self._to_tensor(actions, dtype=torch.int64)
+        old_log_probs_t = self._to_tensor(old_log_probs)
+        advantages_t = self._to_tensor(advantages)
+        returns_t = self._to_tensor(returns)
+
+        logits_or_probs = self.policy_net(states_t)
+        dist = torch.distributions.Categorical(logits=logits_or_probs)
+        log_probs = dist.log_prob(actions_t)
+        entropy = dist.entropy().mean()
+
+        # ratio
+        ratio = torch.exp(log_probs - old_log_probs_t)
+        surr1 = ratio * advantages_t
+        surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * advantages_t
+        policy_loss = -torch.min(surr1, surr2).mean()
+
+        # value loss
+        values = self.value_net(states_t)
+        value_loss = (returns_t - values).pow(2).mean()
+
+        loss = policy_loss + self.value_coeff * value_loss - self.entropy_coeff * entropy
+        return loss
+
+    def train_step(self) -> Optional[float]:
+        """Perform PPO training step."""
+        if len(self.buffer) < self.config.batch_size:
+            return None
+
+        batch = self.buffer.sample(self.config.batch_size)
+        loss = self._compute_loss(batch)
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        self._clip_grad_norm()
+        self.optimizer.step()
+
+        self.log_training_step(loss=float(loss.item()))
+        return float(loss.item())
+
+
+class SACDiscreteAgent(BaseRLAgent):
+    """
+    Soft Actor-Critic (Discrete) agent.
+    Compatible with your BaseRLAgent and ReplayBuffer.
+    """
+
+    def __init__(
+        self,
+        config: RLConfig,
+        policy_network: Optional[nn.Module] = None,
+        value_network: Optional[nn.Module] = None,
+        **kwargs
+    ):
+        super().__init__(
+            config=config,
+            policy_network=policy_network,
+            value_network=value_network,
+            **kwargs
+        )
+
+        # Two Q networks (SAC requirement)
+        hidden_dim = kwargs.get("hidden_dim", 128)
+        self.q1 = SimpleQNetwork(config.obs_dim, config.action_dim, hidden_dim).to(self.device)
+        self.q2 = SimpleQNetwork(config.obs_dim, config.action_dim, hidden_dim).to(self.device)
+
+        self.q1_target = SimpleQNetwork(config.obs_dim, config.action_dim, hidden_dim).to(self.device)
+        self.q2_target = SimpleQNetwork(config.obs_dim, config.action_dim, hidden_dim).to(self.device)
+
+        self.q1_target.load_state_dict(self.q1.state_dict())
+        self.q2_target.load_state_dict(self.q2.state_dict())
+
+        self.alpha = config.alpha  # entropy temperature
+
+        # Optimizers
+        self.policy_optimizer = optim.Adam(self.policy_net.parameters(), lr=config.lr)
+        self.q1_optimizer = optim.Adam(self.q1.parameters(), lr=config.lr)
+        self.q2_optimizer = optim.Adam(self.q2.parameters(), lr=config.lr)
+
+    def _initialize_networks(self, hidden_dim: int = 128, **kwargs):
+        self.policy_net = PolicyNetwork(self.config.obs_dim, self.config.action_dim, hidden_dim)
+        self.value_net = None  # SAC does not use a value network
+
+    def select_action(self, state: np.ndarray, training: bool = True) -> int:
+        state_t = self._to_tensor(state).unsqueeze(0)
+        logits = self.policy_net(state_t)
+        dist = torch.distributions.Categorical(logits=logits)
+
+        if training:
+            action = dist.sample()
+        else:
+            action = torch.argmax(logits, dim=-1)
+
+        return int(action.item())
+
+    def _compute_loss(self, batch):
+        states, actions, rewards, next_states, dones = batch
+
+        states_t = self._to_tensor(states)
+        actions_t = self._to_tensor(actions, dtype=torch.long)
+        rewards_t = self._to_tensor(rewards)
+        next_states_t = self._to_tensor(next_states)
+        dones_t = self._to_tensor(dones)
+
+        # Policy distribution
+        logits = self.policy_net(states_t)
+        dist = torch.distributions.Categorical(logits=logits)
+        log_probs = dist.log_prob(actions_t)
+        entropy = dist.entropy().mean()
+
+        # Q-values
+        q1_vals = self.q1(states_t).gather(1, actions_t.unsqueeze(1)).squeeze()
+        q2_vals = self.q2(states_t).gather(1, actions_t.unsqueeze(1)).squeeze()
+
+        # Next-state policy
+        next_logits = self.policy_net(next_states_t)
+        next_dist = torch.distributions.Categorical(logits=next_logits)
+        next_actions = next_dist.sample()
+        next_log_probs = next_dist.log_prob(next_actions)
+
+        q1_next = self.q1_target(next_states_t).gather(1, next_actions.unsqueeze(1)).squeeze()
+        q2_next = self.q2_target(next_states_t).gather(1, next_actions.unsqueeze(1)).squeeze()
+        q_next = torch.min(q1_next, q2_next) - self.alpha * next_log_probs
+
+        target = rewards_t + self.config.gamma * (1 - dones_t) * q_next.detach()
+
+        # Q losses
+        q1_loss = F.mse_loss(q1_vals, target)
+        q2_loss = F.mse_loss(q2_vals, target)
+
+        # Policy loss
+        policy_loss = (self.alpha * log_probs - torch.min(q1_vals, q2_vals)).mean()
+
+        # Update networks
+        self.q1_optimizer.zero_grad()
+        q1_loss.backward()
+        self.q1_optimizer.step()
+
+        self.q2_optimizer.zero_grad()
+        q2_loss.backward()
+        self.q2_optimizer.step()
+
+        self.policy_optimizer.zero_grad()
+        policy_loss.backward()
+        self.policy_optimizer.step()
+
+        # Soft update
+        self.soft_update(self.q1, self.q1_target)
+        self.soft_update(self.q2, self.q2_target)
+
+        return (q1_loss + q2_loss + policy_loss).item()
+
+    def train_step(self):
+        if len(self.buffer) < self.config.batch_size:
+            return None
+        batch = self.buffer.sample(self.config.batch_size)
+        return self._compute_loss(batch)
 
 
 class AgentFactory:

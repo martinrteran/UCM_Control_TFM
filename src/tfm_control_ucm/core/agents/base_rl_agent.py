@@ -24,6 +24,23 @@ from .utils import RLConfig,ReplayBuffer
 from typing import Dict, Any, Optional, SupportsFloat, Tuple, List, Union
 
 
+def compute_gae(rewards, values, dones, gamma, lam):
+    """
+    rewards: np.array [T]
+    values: np.array [T+1] (incluye valor del estado final)
+    dones: np.array [T] (bool)
+    """
+    T = len(rewards)
+    advantages = np.zeros(T, dtype=np.float32)
+    gae = 0.0
+    for t in reversed(range(T)):
+        delta = rewards[t] + gamma * (0.0 if dones[t] else values[t + 1]) - values[t]
+        gae = delta + gamma * lam * (0.0 if dones[t] else gae)
+        advantages[t] = gae
+    returns = advantages + values[:-1]
+    return advantages, returns
+
+
 # ============================================================================
 # BASE RL AGENT
 # ============================================================================

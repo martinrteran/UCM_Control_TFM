@@ -59,22 +59,8 @@ class RLConfig:
     eps_end: float = 0.05 # Final epsilon after decay
     eps_decay: int = 100_000 # Steps over which to decay epsilon
     
-    # Target network (DQN-family)
-    target_update: int = 1000 # Steps between target network updates
-    tau: float = 0.005  # Soft update coefficient
-    
-    # PPO-specific
-    gae_lambda: float = 0.95 # GAE lambda for advantage estimation
-    clip_ratio: float = 0.2 # PPO clipping ratio
-    entropy_coeff: float = 0.01 # Entropy coefficient for exploration in policy gradient methods
-    
-    # SAC-specific
-    alpha: float = 0.2 # Initial temperature parameter for SAC
-    auto_entropy_tuning: bool = True # Whether to automatically tune alpha in SAC
-    
     # General
     max_grad_norm: float = 10.0 # Max gradient norm for clipping
-    double_dqn: bool = True # Whether to use Double DQN (if algorithm is DQN)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary, handling non-serializable types."""
@@ -103,53 +89,135 @@ class BaseRLConfig:
             self.device = torch.device(self.device)
 
 @dataclass
-class PPOConfig(BaseRLConfig):
-    gae_lambda: float = 0.95
-    clip_ratio: float = 0.2
-    entropy_coeff: float = 0.01
+class DQNConfig(RLConfig):
+    target_update: int = 1000
+    tau: float = 0.005
+    double_dqn: bool = True
+
+
+@dataclass
+class SACConfig(RLConfig):
+    alpha: float = 0.2
+    auto_entropy_tuning: bool = True
+    tau: float = 0.005
+    target_update: int = 1000
+    double_dqn: bool = True
+
+@dataclass
+class PPOConfig(RLConfig):
+    gae_lambda: float = 0.95# GAE lambda for advantage estimation
+    clip_ratio: float = 0.2# PPO clipping ratio
+    clip_eps: float = 0.2# PPO clipping epsilon
+    entropy_coeff: float = 0.01# Entropy coefficient for exploration in policy gradient methods
     rollout_steps: int = 2048
+    clip_eps: float = 0.2 # PPO clipping epsilon
+
+
+import numpy as np
+import torch
+from typing import List, Tuple, Any
 
 
 class ReplayBuffer:
-    """Simple replay buffer for off-policy algorithms."""
-    
-    def __init__(self, max_size: int = 100_000, device: Union[str, torch.device] = "cpu"):
-        self.max_size = max_size
-        self.buffer = deque(maxlen=max_size)
-        self.device = device if isinstance(device, torch.device) else torch.device(device)
-    
-    def add(self, state, action, reward, next_state, done):
-        """Add transition to buffer."""
-        self.buffer.append((state, action, reward, next_state, done))
-    
-    def sample(self, batch_size: int):
-        """Sample random batch from buffer."""
-        indices = np.random.choice(len(self.buffer), batch_size, replace=False)
-        states, actions, rewards, next_states, dones = zip(*[self.buffer[i] for i in indices])
+    """
+    Universal Replay Buffer compatible with:
+        - DQNAgent  (s, a, r, ns, done)
+        - A2CAgent  (s, a, r, ns, done)
+        - PPOAgent  (s, a, r, ns, done, log_prob, advantage, return)
 
-        states = np.asarray(states, dtype=np.float32)
-        actions = np.asarray(actions, dtype=np.int64)
-        rewards = np.asarray(rewards, dtype=np.float32)
-        next_states = np.asarray(next_states, dtype=np.float32)
-        dones = np.asarray(dones, dtype=np.bool_)
-        
-        if self.device != torch.device("cpu"):
-            return (
-                torch.from_numpy(states).to(self.device, torch.float32),
-                torch.from_numpy(actions).to(self.device, torch.float32),
-                torch.from_numpy(rewards).to(self.device, torch.float32),
-                torch.from_numpy(next_states).to(self.device, torch.float32),
-                torch.from_numpy(dones).to(self.device, torch.float32),
-            )
-        else:
-            return states, actions, rewards, next_states, dones
-    
+    The buffer stores transitions as dictionaries.
+    When sampling, it automatically returns the correct batch format
+    depending on the fields present in the stored transitions.
+    """
+
+    def __init__(self, max_size: int, device: torch.device):
+        self.max_size = max_size
+        self.device = device
+        self.storage: List[dict] = []
+        self.ptr = 0
+
     def __len__(self):
-        return len(self.buffer)
-    
+        return len(self.storage)
+
     def clear(self):
-        """Clear the buffer."""
-        self.buffer.clear()
+        self.storage.clear()
+        self.ptr = 0
+
+    def add(self, *args):
+        """
+        Accepts either:
+            (s, a, r, ns, done)
+        or
+            (s, a, r, ns, done, log_prob, advantage, return)
+        """
+
+        if len(args) == 5:
+            s, a, r, ns, done = args
+            transition = {
+                "state": s,
+                "action": a,
+                "reward": r,
+                "next_state": ns,
+                "done": done,
+            }
+
+        elif len(args) == 8:
+            s, a, r, ns, done, logp, adv, ret = args
+            transition = {
+                "state": s,
+                "action": a,
+                "reward": r,
+                "next_state": ns,
+                "done": done,
+                "log_prob": logp,
+                "advantage": adv,
+                "return": ret,
+            }
+
+        else:
+            raise ValueError("ReplayBuffer.add() received an invalid number of arguments")
+
+        # Insert or overwrite
+        if len(self.storage) < self.max_size:
+            self.storage.append(transition)
+        else:
+            self.storage[self.ptr] = transition
+        self.ptr = (self.ptr + 1) % self.max_size
+
+    def sample(self, batch_size: int):
+        """
+        Returns the correct batch format depending on stored fields.
+        """
+
+        idxs = np.random.randint(0, len(self.storage), size=batch_size)
+        batch = [self.storage[i] for i in idxs]
+
+        # Always present
+        states = np.array([b["state"] for b in batch], dtype=np.float32)
+        actions = np.array([b["action"] for b in batch], dtype=np.int64)
+        rewards = np.array([b["reward"] for b in batch], dtype=np.float32)
+        next_states = np.array([b["next_state"] for b in batch], dtype=np.float32)
+        dones = np.array([b["done"] for b in batch], dtype=np.float32)
+
+        # PPO fields (optional)
+        if "log_prob" in batch[0]:
+            log_probs = np.array([b["log_prob"] for b in batch], dtype=np.float32)
+            advantages = np.array([b["advantage"] for b in batch], dtype=np.float32)
+            returns = np.array([b["return"] for b in batch], dtype=np.float32)
+
+            return (
+                states,
+                actions,
+                rewards,
+                next_states,
+                dones,
+                log_probs,
+                advantages,
+                returns,
+            )
+
+        # DQN / A2C format
+        return (states, actions, rewards, next_states, dones)
 
 
 ## A more specialized replay buffer for grid-based environments, if needed.
