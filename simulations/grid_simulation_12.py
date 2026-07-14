@@ -23,6 +23,7 @@ rl_config = RLConfig(obs_dim=obv_dim, action_dim=action_dim, algorithm=RLAlgorit
 policy_net = SimpleQNetwork(obs_dim=obv_dim, action_dim=action_dim, num_hidden_layers=2, hidden_dim=128).to(device)
 target_net = SimpleQNetwork(obs_dim=obv_dim, action_dim=action_dim, num_hidden_layers=2, hidden_dim=128).to(device)
 agent = GridAgent(rl_config, policy_net = policy_net, target_net = target_net)
+agent.load(rf"./checkpoints/Test/12/Simple Q Network/final.pth")
 
 t_config = training_manager.TrainerConfig(
     eps_step=0,
