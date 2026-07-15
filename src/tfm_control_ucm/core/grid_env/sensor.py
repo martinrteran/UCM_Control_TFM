@@ -50,7 +50,7 @@ class GridLidar:
 
         if self.with_cache:
             self.dist_grid = torch.arange(1, max_range+1, device=device, dtype=torch.float32)
-            self.dr_base = torch.round(-torch.sin(self.angles_rad) * self.dist_grid).type(torch.int32) # [R, D]
+            self.dr_base = torch.round(torch.sin(self.angles_rad) * self.dist_grid).type(torch.int32) # [R, D]
             self.dc_base = torch.round(torch.cos(self.angles_rad) * self.dist_grid).to(torch.int32)  # [R, D]
 
         # Diccionario de Lookup Tables para los mapas procesados
@@ -77,7 +77,7 @@ class GridLidar:
 
         dist = torch.arange(1, self.max_range + 1, device=self.device, dtype=torch.float32)
         # self.angles_rad is (N, 1), dist is (D,) -> Product is (N, D)
-        dr_base = torch.round(-torch.sin(self.angles_rad) * dist).type(torch.int32)
+        dr_base = torch.round(torch.sin(self.angles_rad) * dist).type(torch.int32)
         dc_base = torch.round(torch.cos(self.angles_rad) * dist).type(torch.int32)
 
         chunk_size = 5000 
@@ -87,7 +87,7 @@ class GridLidar:
             
             # (C, 1, 1) + (1, N, D) -> (C, N, D)
             cc_global = c_chunk[:, None, None] + dc_base[None, :, :]
-            rr_global = r_chunk[:, None, None] + dr_base[None, :, :]
+            rr_global = r_chunk[:, None, None] - dr_base[None, :, :]
             
             valid_mask = (rr_global >= 0) & (rr_global < height) & (cc_global >= 0) & (cc_global < width)
             rr_clamped = torch.clip(rr_global, 0, height - 1)

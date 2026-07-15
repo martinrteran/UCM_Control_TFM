@@ -230,7 +230,7 @@ class Grid_Robot_Sections_Env(gym.Env):
         self.cell_size = cell_size
         self.num_sections = num_sections
 
-        self._angle_per_section = 2*np.pi/num_sections;
+        self._angle_per_section = self.lidar.fov_rad/num_sections;
         self._start_angle = -self._angle_per_section/2;
     
     def get_observation_shape(self):
@@ -274,9 +274,10 @@ class Grid_Robot_Sections_Env(gym.Env):
         
         robot_obs = torch.tensor([self._dist_to_goal(), self._angle_to_goal()], device=device)
         
-        # If the top_scanning is in the max_range +- the noise_std, then set the distance to -1.0 to indicate that there is no obstacle detected in that section
-        # top_scanning[top_scanning[:, 0] ==self.lidar.max_range, 0] = float(-1)
-        
+        # If the top_scanning is in the max_range +- the noise_std, then set the angle to the middle of the section
+        for i in range(self.num_sections):
+            if top_scanning[i, 0] >= self.lidar.max_range - self.lidar.noise_std:
+                top_scanning[i, 1] = self._start_angle + (i + 0.5) * self._angle_per_section        
 
         concated = torch.cat([top_scanning.flatten(), robot_obs])
         return concated.detach().cpu().numpy()
@@ -345,8 +346,8 @@ class Grid_Robot_Sections_Env(gym.Env):
         reward -= 0.05
 
         # 3. Bounded obstacle-proximity penalty — no division, no blow-up
-        if min_dist < self._safety_margin: # TODO - Try different safety_margins
-            closeness = (self._safety_margin - min_dist) / self._safety_margin  # in [0, 1]
+        if min_dist < self._max_range:#if min_dist < self._safety_margin: # TODO - Try different safety_margins
+            closeness = min_dist#(self._safety_margin - min_dist) / self._safety_margin  # in [0, 1]
             reward -= closeness * self._max_proximity_penalty
 
         # 5. Terminal reward/penalty — clearly bigger than any step reward, but not extreme

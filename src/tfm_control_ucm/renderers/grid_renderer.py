@@ -102,7 +102,7 @@ class PygameRenderer:
         for dist, angle_rad in distances:
             if dist < 0: continue
             dx = np.cos(angle_rad) * dist * self.cell_size
-            dy = -np.sin(angle_rad) * dist * self.cell_size
+            dy = np.sin(angle_rad) * dist * self.cell_size
 
             pygame.draw.line(
                 self.screen,
@@ -116,11 +116,13 @@ class PygameRenderer:
         start_angle = -angle_per_section/2;
         for i in range(num_sections):
             section_center = start_angle +  i * angle_per_section
+            dx = np.cos(section_center) * self.cell_size * 10
+            dy = np.sin(section_center) * self.cell_size * 10
             pygame.draw.line(
                 self.screen,
                 (255, 0, 0),
                 (cx, cy),
-                (cx + np.cos(section_center) * self.cell_size * 10, cy - np.sin(section_center) * self.cell_size * 10),
+                (cx + dx, cy + dy),
                 1,
             )
 

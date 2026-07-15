@@ -275,6 +275,9 @@ class PPOTrainer(BaseTrainer):
                     info = {}
 
                     while not done:
+                        if self.config.render:
+                            env.render()
+
                         # 1. Value
                         value = agent.value_net(agent._to_tensor(state)).item()
                         values.append(value)
