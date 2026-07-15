@@ -320,7 +320,7 @@ class Grid_Robot_Sections_Env(gym.Env):
     
     _safety_margin = 3.0       # lidar distance below which we start penalizing proximity
     _max_proximity_penalty = 1.0
-    _stagnation_window = 8     # how many recent actions to check for spinning
+    # _stagnation_window = 8     # how many recent actions to check for spinning
 
     def step(self, action: int):
         self.steps += 1
@@ -345,7 +345,7 @@ class Grid_Robot_Sections_Env(gym.Env):
         reward -= 0.05
 
         # 3. Bounded obstacle-proximity penalty — no division, no blow-up
-        if min_dist < self._safety_margin:
+        if min_dist < self._safety_margin: # TODO - Try different safety_margins
             closeness = (self._safety_margin - min_dist) / self._safety_margin  # in [0, 1]
             reward -= closeness * self._max_proximity_penalty
 
