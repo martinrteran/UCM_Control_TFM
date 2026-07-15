@@ -108,7 +108,7 @@ class PygameRenderer:
                 self.screen,
                 self.ray_color,
                 (cx, cy),
-                (cx + dx, cy + dy),
+                (cx + dx, cy - dy),
                 2,
             )
         

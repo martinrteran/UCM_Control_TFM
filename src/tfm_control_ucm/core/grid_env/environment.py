@@ -347,8 +347,8 @@ class Grid_Robot_Sections_Env(gym.Env):
 
         # 3. Bounded obstacle-proximity penalty — no division, no blow-up
         if min_dist < self._max_range:#if min_dist < self._safety_margin: # TODO - Try different safety_margins
-            closeness = min_dist#(self._safety_margin - min_dist) / self._safety_margin  # in [0, 1]
-            reward -= closeness * self._max_proximity_penalty
+            # closeness = (self._safety_margin - min_dist) / self._safety_margin  # in [0, 1]
+            reward -= (self.lidar.max_range - min_dist)/self.lidar.max_range #closeness * self._max_proximity_penalty
 
         # 5. Terminal reward/penalty — clearly bigger than any step reward, but not extreme
         done = False
