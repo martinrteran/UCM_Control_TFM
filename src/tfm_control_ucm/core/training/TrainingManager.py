@@ -148,12 +148,6 @@ class BaseTrainer(ABC):
 
                         state = next_state
                         
-                 
-                    # dominant_action = int(np.argmax(ep_action_counts))
-                    # dominant_success = int(np.argmax(ep_terminated_count))
-                    # recent_actions.append(dominant_action)
-                    # recent_rewards.append(ep_reward)
-                    # recent_successes.append(dominant_success)
 
                     if eps_step==0:
                         loss = agent.train_step()
@@ -331,17 +325,21 @@ class PPOTrainer(BaseTrainer):
 
                     # Train PPO
                     loss = agent.train_step()
-                    if loss is not None:
-                        writer.add_scalar(f"Loss/Episode", loss, episode)
+                    
                     ep_steps = len(states)
+                    ep_reward = sum(rewards)
 
-                    writer.add_scalar("Value/Episode", last_value, episode)
+                    writer.add_scalar("Policy/Value", last_value, episode)
+                    writer.add_scalar("Policy/Loss", loss, episode)
+                    writer.add_scalar("Policy/Entropy", agent.last_entropy, episode)
+                    writer.add_scalar("Policy/PolicyLoss", agent.las_policy_loss, episode)
+                    writer.add_scalar("Policy/ValueLoss", agent.last_value_loss, episode)
 
                     writer.add_scalar("Steps/Episode",           ep_steps,                   episode)
-                    writer.add_scalar("Steps/Min/Episode",       min_steps,                  episode)
-                    writer.add_scalar("Steps/Ratio/Episode",     ep_steps/min_steps if min_steps>0 else 0, episode)
+                    writer.add_scalar("Steps/Min",       min_steps,                  episode)
+                    writer.add_scalar("Steps/Ratio",     ep_steps/min_steps if min_steps>0 else 0, episode)
                     
-                    ep_reward = sum(rewards)
+                    
                     writer.add_scalar(f"Reward/Total", ep_reward, episode)
 
                     writer.add_scalar(f"Done/Success", int(terminated), episode)

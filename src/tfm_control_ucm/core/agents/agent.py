@@ -1102,6 +1102,12 @@ class PPOAgent(BaseRLAgent):
         value_loss = (returns_t - values).pow(2).mean()
 
         loss = policy_loss + self.value_coeff * value_loss - self.entropy_coeff * entropy
+
+        self.last_entropy = entropy.item()
+        self.las_policy_loss = policy_loss.item()
+        self.last_value_loss = value_loss.item()
+        self.last_loss = loss.item()
+
         return loss
 
     def train_step(self) -> Optional[float]:

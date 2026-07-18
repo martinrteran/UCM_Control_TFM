@@ -1,0 +1,5 @@
+{
+    "name": "obstacle_free_map",
+    "size": [40,60],
+    "obstacles": []
+}

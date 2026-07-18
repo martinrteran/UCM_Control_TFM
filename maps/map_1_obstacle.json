@@ -1,0 +1,8 @@
+{
+    "name": "simple_map",
+    "size": [40,60],
+    "obstacles": [
+        {"corner":[10,25], "size":[20,10]}
+
+    ]
+}
