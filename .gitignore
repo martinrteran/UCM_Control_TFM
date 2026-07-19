@@ -1,6 +1,4 @@
 .venv
 .vscode
 .venv2
-checkpoints/*
-runs/*
 *.pyc
