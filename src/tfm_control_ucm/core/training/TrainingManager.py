@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from msilib.schema import SelfReg
 import time
 import datetime
+from tfm_control_ucm.utils.timer import Timer
 from typing import Callable, Optional
 import gymnasium as gym
 import numpy as np
@@ -273,18 +274,23 @@ class PPOTrainer(BaseTrainer):
                             env.render()
 
                         # 1. Value
+                        # with Timer("Value Computation", sync_cuda=True):
                         value = agent.value_net(agent._to_tensor(state)).item()
                         values.append(value)
 
                         # 2. Action
+                        # with Timer("Action Selection", sync_cuda=True):
                         action = agent.select_action(state, training=True)
 
                         # 3. Log prob
-                        logits = agent.policy_net(agent._to_tensor(state))
-                        dist = torch.distributions.Categorical(logits=logits)
-                        log_prob = dist.log_prob(torch.tensor(action, device=agent.device)).item()
+                        # with Timer("Log Prob Computation", sync_cuda=False):
+                        #logits = agent.policy_net(agent._to_tensor(state))
+                        #dist = torch.distributions.Categorical(logits=logits)
+                        #log_prob = dist.log_prob(torch.tensor(action, device=agent.device)).item()
+                        log_prob = agent.last_log_prob.item() if hasattr(agent, 'last_log_prob') else 0.0
 
                         # 4. Step
+                        # with Timer("Environment Step"):
                         next_state, reward, terminated, truncated, info = env.step(action)
                         done = terminated or truncated
 
@@ -324,15 +330,17 @@ class PPOTrainer(BaseTrainer):
                         )
 
                     # Train PPO
+                    # with Timer("PPO Training Step", sync_cuda=True):
                     loss = agent.train_step()
                     
                     ep_steps = len(states)
                     ep_reward = sum(rewards)
-
+                    #with Timer("Logging", sync_cuda=False):
                     writer.add_scalar("Policy/Value", last_value, episode)
-                    writer.add_scalar("Policy/Loss", loss, episode)
+                    if loss is not None:
+                        writer.add_scalar("Policy/Loss", loss, episode)
                     writer.add_scalar("Policy/Entropy", agent.last_entropy, episode)
-                    writer.add_scalar("Policy/PolicyLoss", agent.las_policy_loss, episode)
+                    writer.add_scalar("Policy/PolicyLoss", agent.last_policy_loss, episode)
                     writer.add_scalar("Policy/ValueLoss", agent.last_value_loss, episode)
 
                     writer.add_scalar("Steps/Episode",           ep_steps,                   episode)

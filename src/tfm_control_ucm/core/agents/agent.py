@@ -1072,6 +1072,7 @@ class PPOAgent(BaseRLAgent):
         self.last_log_prob = dist.log_prob(action).detach()
         return int(action.item())
 
+
     def _compute_loss(self, batch: Tuple) -> torch.Tensor:
         """
         Compute PPO loss from batch:
@@ -1104,7 +1105,7 @@ class PPOAgent(BaseRLAgent):
         loss = policy_loss + self.value_coeff * value_loss - self.entropy_coeff * entropy
 
         self.last_entropy = entropy.item()
-        self.las_policy_loss = policy_loss.item()
+        self.last_policy_loss = policy_loss.item()
         self.last_value_loss = value_loss.item()
         self.last_loss = loss.item()
 
