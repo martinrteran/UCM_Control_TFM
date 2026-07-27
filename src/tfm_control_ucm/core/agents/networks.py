@@ -86,6 +86,43 @@ class ValueNetwork(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+class RecurrentGRUPolicy(nn.Module):
+    def __init__(self, obs_dim, hidden_dim, action_dim):
+        super().__init__()
+        self.fc = nn.Linear(obs_dim, hidden_dim)
+        self.relu = nn.ReLU()
+        self.gru = nn.GRU(hidden_dim, hidden_dim, batch_first=True)
+        self.out = nn.Linear(hidden_dim, action_dim)
+        self.hidden_dim = hidden_dim
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
+
+
+    def forward(self, x, h):
+        x = self.fc(x)
+        x = self.relu(x)
+        x, h = self.gru(x.unsqueeze(1), h)
+        logits = self.out(x.squeeze(1))
+        return logits, h
+
+class RecurrentGRUValue(nn.Module):
+    def __init__(self, obs_dim, hidden_dim):
+        super().__init__()
+        self.fc = nn.Linear(obs_dim, hidden_dim)
+        self.relu = nn.ReLU()
+        self.gru = nn.GRU(hidden_dim, hidden_dim, batch_first=True)
+        self.out = nn.Linear(hidden_dim, 1)
+        self.hidden_dim = hidden_dim
+        self.obs_dim = obs_dim
+        self.action_dim = 1
+
+    def forward(self, x, h):
+        x = self.fc(x)
+        x = self.relu(x)
+        x, h = self.gru(x.unsqueeze(1), h)
+        value = self.out(x.squeeze(1))
+        return value, h
+
 
 def CreateNetwork(name:str, **kwargs)->nn.Module:
     if name == "grid_agent_network":

@@ -22,7 +22,7 @@ import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
 from tfm_control_ucm.core.training.utils import InterruptHandler, EarlyStopping
-from ...utils.path_planner import PathPlanner, TorchPathPlanner
+from tfm_control_ucm.utils.path_planner import PathPlanner
 
 from ..agents.base_rl_agent import BaseRLAgent, compute_gae
 
@@ -360,6 +360,136 @@ class PPOTrainer(BaseTrainer):
         
         checkpoint_path = f"{self.models_save_dir}/{agent.config.name}/final.pth"# {self.exec_date}
         agent.save(checkpoint_path)
+class PPOGRUTrainer(BaseTrainer):
+
+    def simulate(self, agent: BaseRLAgent, env: gym.Env, num_episodes: int = 10, render: bool = False):
+        for episode in range(num_episodes):
+            state, _ = env.reset()
+            agent.reset_hidden()
+
+            done = False
+            ep_reward = 0.0
+            steps = 0
+
+            while not done:
+                action = agent.select_action(state, training=False)
+                next_state, reward, terminated, truncated, info = env.step(action)
+                done = terminated or truncated
+
+                state = next_state
+                ep_reward += float(reward)
+                steps += 1
+
+                if render:
+                    env.render()
+
+            print(f"[SIM] Episode {episode+1}/{num_episodes} - Reward: {ep_reward:.2f} - Steps: {steps}")
+
+
+    def train(self, num_episodes: Optional[int] = None, eps_step: Optional[int] = None):
+        global_step = 0
+
+        agent = self.agents[0]      # PPOGRUAgent
+        env = self.envs[0]
+
+        num_episodes = num_episodes or self.config.num_episodes
+        episodes = tqdm.tqdm(range(num_episodes), desc="Training") if self.config.useTQDM else range(num_episodes)
+        eps_step = eps_step or self.config.eps_step
+
+        path_planner = PathPlanner(env.map.grid)  # type: ignore
+
+        with SummaryWriter(log_dir=f"{self.logs_save_dir}/{agent.config.name}") as writer:
+            with InterruptHandler(agent, writer, f"{self.models_save_dir}/{agent.config.name}") as handler:
+                for episode in episodes:
+                    state, _ = env.reset()
+                    agent.reset_hidden()
+
+                    states   = []
+                    actions  = []
+                    rewards  = []
+                    dones    = []
+                    log_probs = []
+                    values   = []
+
+                    done = False
+                    terminated = False
+
+                    start_dist = state[-2]
+                    start_pos = env.robot.position  # type: ignore
+                    end_pos   = env.goal_pos        # type: ignore
+                    start_pos = (int(start_pos[1]), int(start_pos[0]))
+                    end_pos   = (int(end_pos[1]),   int(end_pos[0]))
+                    min_steps = path_planner.min_steps(start=start_pos, goal=end_pos, method="wavefront")
+
+                    if self.config.render:
+                        env.render()
+
+                    info = {}
+
+                    while not done:
+                        # 1. Value recurrente
+                        value = agent.evaluate_value(state)
+                        values.append(value)
+
+                        # 2. Acción recurrente
+                        action = agent.select_action(state, training=True)
+
+                        # 3. Log prob recurrente
+                        log_prob = agent.last_log_prob.item()
+
+                        # 4. Step
+                        next_state, reward, terminated, truncated, info = env.step(action)
+                        done = terminated or truncated
+
+                        # 5. Guardar transición en el agente
+                        agent.store_transition(state, action, reward, done, log_prob, value)
+
+                        states.append(state)
+                        actions.append(action)
+                        rewards.append(reward)
+                        dones.append(done)
+                        log_probs.append(log_prob)
+
+                        state = next_state
+
+                    # Entrenar PPO (GAE + update dentro del agente)
+                    loss = agent.train_step()
+
+                    ep_steps  = len(states)
+                    ep_reward = sum(rewards)
+
+                    # métricas del agente
+                    last_value   = agent.last_return
+                    entropy      = agent.last_entropy
+                    value_loss   = agent.last_value_loss
+                    policy_loss  = agent.last_policy_loss
+                    advantage    = agent.last_advantage
+
+                    # logs principales
+                    writer.add_scalar("Loss/Total", loss, episode)
+                    writer.add_scalar("Loss/Policy", policy_loss, episode)
+                    writer.add_scalar("Loss/Value", value_loss, episode)
+                    writer.add_scalar("Entropy/Episode", entropy, episode)
+                    writer.add_scalar("Value/Last", last_value, episode)
+                    writer.add_scalar("Advantage/Mean", advantage, episode)
+
+                    writer.add_scalar("Steps/Episode", ep_steps, episode)
+                    writer.add_scalar("Steps/Min/Episode", min_steps, episode)
+                    writer.add_scalar("Steps/Ratio/Episode", ep_steps / min_steps if min_steps > 0 else 0, episode)
+
+                    writer.add_scalar("Reward/Total", ep_reward, episode)
+
+                    writer.add_scalar("Done/Success", int(terminated), episode)
+                    writer.add_scalar("Done/Max Steps Reached", info.get('max_steps_reached', False), episode)
+                    writer.add_scalar("Done/Hit Obstacle", info.get('hit_obstacle', False), episode)
+
+                    writer.add_scalar("Distances/Start",  start_dist, episode)
+                    writer.add_scalar("Distances/End",    state[-2], episode)
+                    writer.add_scalar("Distances/Change", start_dist - state[-2], episode)
+
+        checkpoint_path = f"{self.models_save_dir}/{agent.config.name}/final.pth"
+        agent.save(checkpoint_path)
+
 
 class MultiAgentTrainer(BaseTrainer):
     """

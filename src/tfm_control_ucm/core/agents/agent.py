@@ -1245,6 +1245,146 @@ class SACDiscreteAgent(BaseRLAgent):
         batch = self.buffer.sample(self.config.batch_size)
         return self._compute_loss(batch)
 
+class PPOGRUAgent(BaseRLAgent):
+    def __init__(self, 
+                 config: RLConfig,
+                 policy_network: Optional[nn.Module] = None,
+                 value_network: Optional[nn.Module] = None,
+                 **kwargs):
+        super().__init__(config, policy_network, value_network, **kwargs)
+
+        self.gamma = config.gamma
+        self.lam = getattr(config, "gae_lambda", 0.95)
+        self.clip_eps = config.clip_eps
+        self.value_coef = getattr(config, "value_coeff", 0.5)
+        self.entropy_coef = config.entropy_coeff
+
+        self.reset_hidden()
+
+        self.buffer: List[Tuple] = []  # (s, a, r, done, log_prob, value)
+
+        # métricas para el trainer
+        self.last_policy_loss = 0.0
+        self.last_value_loss = 0.0
+        self.last_entropy = 0.0
+        self.last_loss = 0.0
+        self.last_return = 0.0
+        self.last_advantage = 0.0
+        self.last_log_prob = torch.tensor(0.0, device=self.device)
+
+    def reset_hidden(self, batch_size: int = 1):
+        self.h_policy = torch.zeros(1, batch_size, self.policy_net.hidden_dim, device=self.device)
+        self.h_value  = torch.zeros(1, batch_size, self.value_net.hidden_dim,  device=self.device)
+
+    def _compute_loss(self, batch: Tuple) -> torch.Tensor:
+        """
+        Compute loss for the batch.
+        
+        Algorithm-specific implementation.
+        """
+        raise NotImplementedError
+    def _initialize_networks(self, hidden_dim: int = 128, **kwargs):
+        pass
+
+    def _to_tensor(self, state):
+        if isinstance(state, np.ndarray):
+            state = torch.from_numpy(state).float()
+        elif isinstance(state, (list, tuple)):
+            state = torch.tensor(state, dtype=torch.float32)
+        return state.to(self.device)
+
+    def select_action(self, state, training: bool = True) -> int:
+        state_t = self._to_tensor(state).unsqueeze(0)  # (1, obs_dim)
+
+        logits, self.h_policy = self.policy_net(state_t, self.h_policy)
+        dist = torch.distributions.Categorical(logits=logits)
+
+        if training:
+            action = dist.sample()
+        else:
+            action = torch.argmax(logits, dim=-1)
+
+        log_prob = dist.log_prob(action)
+        self.last_log_prob = log_prob.detach()
+
+        # valor para este estado (se usa en store_transition si quieres)
+        value, self.h_value = self.value_net(state_t, self.h_value)
+
+        return int(action.item())
+
+    def evaluate_value(self, state) -> float:
+        state_t = self._to_tensor(state).unsqueeze(0)
+        value, self.h_value = self.value_net(state_t, self.h_value)
+        return float(value.item())
+
+    def store_transition(self, state, action, reward, done, log_prob, value):
+        self.buffer.append((state, action, reward, done, log_prob, value))
+
+    def compute_gae(self, last_value: float):
+        states, actions, rewards, dones, log_probs, values = zip(*self.buffer)
+
+        rewards = np.array(rewards, dtype=np.float32)
+        dones   = np.array(dones,   dtype=np.float32)
+        values  = np.array(list(values) + [last_value], dtype=np.float32)
+
+        advantages = np.zeros_like(rewards)
+        gae = 0.0
+
+        for t in reversed(range(len(rewards))):
+            delta = rewards[t] + self.gamma * values[t + 1] * (1 - dones[t]) - values[t]
+            gae = delta + self.gamma * self.lam * (1 - dones[t]) * gae
+            advantages[t] = gae
+
+        returns = advantages + values[:-1]
+        return states, actions, log_probs, values[:-1], advantages, returns
+
+    def train_step(self):
+        # último estado para last_value
+        last_state = self.buffer[-1][0]
+        last_value = self.evaluate_value(last_state)
+
+        states, actions, old_log_probs, values, advantages, returns = self.compute_gae(last_value)
+
+        states_t      = torch.stack([self._to_tensor(s) for s in states]).to(self.device)
+        actions_t     = torch.tensor(actions,     dtype=torch.long,      device=self.device)
+        old_log_probs_t = torch.tensor(old_log_probs, dtype=torch.float32, device=self.device)
+        advantages_t  = torch.tensor(advantages, dtype=torch.float32,    device=self.device)
+        returns_t     = torch.tensor(returns,    dtype=torch.float32,    device=self.device)
+
+        batch_size = states_t.size(0)
+        h_p = torch.zeros(1, batch_size, self.policy_net.hidden_dim, device=self.device)
+        h_v = torch.zeros(1, batch_size, self.value_net.hidden_dim,  device=self.device)
+
+        logits, _ = self.policy_net(states_t, h_p)
+        dist = torch.distributions.Categorical(logits=logits)
+        new_log_probs = dist.log_prob(actions_t)
+        entropy = dist.entropy().mean()
+
+        values_pred, _ = self.value_net(states_t, h_v)
+
+        ratio = torch.exp(new_log_probs - old_log_probs_t)
+        surr1 = ratio * advantages_t
+        surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * advantages_t
+        policy_loss = -torch.min(surr1, surr2).mean()
+
+        value_loss = F.mse_loss(values_pred, returns_t)
+
+        loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        self.buffer.clear()
+
+        self.last_policy_loss = float(policy_loss.item())
+        self.last_value_loss  = float(value_loss.item())
+        self.last_entropy     = float(entropy.item())
+        self.last_loss        = float(loss.item())
+        self.last_return      = float(returns_t.mean().item())
+        self.last_advantage   = float(advantages_t.mean().item())
+
+        return self.last_loss
 
 class AgentFactory:
     @staticmethod
