@@ -491,6 +491,110 @@ class PPOGRUTrainer(BaseTrainer):
         agent.save(checkpoint_path)
 
 
+class RecurrentPPOTrainer(BaseTrainer):
+    def train(self, num_episodes: Optional[int] = None, eps_step: Optional[int] = None):
+        agent = self.agents[0]
+        env   = self.envs[0]
+
+        num_episodes = num_episodes or self.config.num_episodes
+        episodes = tqdm.tqdm(range(num_episodes), desc="Training") if self.config.useTQDM else range(num_episodes)
+        path_planner = PathPlanner(env.map.grid)
+        with SummaryWriter(log_dir=f"{self.logs_save_dir}/{agent.config.name}") as writer:
+            with InterruptHandler(agent, writer, f"{self.models_save_dir}/{agent.config.name}") as handler:
+                for episode in episodes:
+                    state, _ = env.reset()
+                    agent.reset_hidden()
+
+                    states   = []
+                    actions  = []
+                    rewards  = []
+                    dones    = []
+                    log_probs = []
+                    values   = []
+
+                    done = False
+                    terminated = False
+                    ep_steps = 0
+
+                    start_dist = state[-2] # state[-1][0]
+                    start_pos = env.robot.position# type: ignore
+                    end_pos = env.goal_pos# type: ignore
+                    start_pos = (int(start_pos[1]), int(start_pos[0]))
+                    end_pos = (int(end_pos[1]), int(end_pos[0]))
+
+                    min_steps = path_planner.min_steps(start=start_pos, goal=end_pos, method="wavefront") 
+                    info =  {}
+                    while not done:
+                        action, log_prob, value = agent.select_action(state, training=True)
+                        next_state, reward, terminated, truncated, info = env.step(action)
+                        done = terminated or truncated
+
+                        states.append(state)
+                        actions.append(action)
+                        rewards.append(reward)
+                        dones.append(done)
+                        log_probs.append(log_prob)
+                        values.append(value)
+
+                        state = next_state
+
+                        ep_steps += 1
+
+                    agent.store_episode(states, actions, rewards, dones, log_probs, values)
+
+                    loss = agent.train_step()
+
+                    
+                    if loss is not None:
+                        writer.add_scalar("Policy/Loss", loss, episode)
+                    writer.add_scalar("Loss/Policy", agent.last_policy_loss, episode)
+                    writer.add_scalar("Loss/Value",  agent.last_value_loss,  episode)
+                    writer.add_scalar("Entropy/Episode", agent.last_entropy, episode)
+
+                    writer.add_scalar("Steps/Episode",           ep_steps,                   episode)
+                    writer.add_scalar("Steps/Min",       min_steps,                  episode)
+                    writer.add_scalar("Steps/Ratio",     ep_steps/min_steps if min_steps>0 else 0, episode)
+                    
+                    ep_reward = sum(rewards)
+                    writer.add_scalar(f"Reward/Total", ep_reward, episode)
+
+                    writer.add_scalar(f"Done/Success", int(terminated), episode)
+                    writer.add_scalar(f"Done/Max Steps Reached", info.get('max_steps_reached', False), episode)
+                    writer.add_scalar(f"Done/Hit Obstacle", info.get('hit_obstacle', False), episode)
+
+                    writer.add_scalar(f"Distances/Start", start_dist, episode)
+                    writer.add_scalar(f"Distances/End", state[-2], episode) # state[-1][0], episode)
+                    writer.add_scalar(f"Distances/Change", start_dist - state[-2], episode) # state[-1][0], episode)
+        
+        checkpoint_path = f"{self.models_save_dir}/{agent.config.name}/final.pth"# {self.exec_date}
+        agent.save(checkpoint_path)
+
+    def simulate(self, agent: BaseRLAgent, env: gym.Env, num_episodes: int = 10, render: bool = False):
+        for episode in range(num_episodes):
+            state, _ = env.reset()
+            agent.reset_hidden(batch_size=1)
+
+            done = False
+            ep_reward = 0.0
+            steps = 0
+
+            while not done:
+                # acción determinista (sin sampling)
+                action, _, _ = agent.select_action(state, training=False)
+
+                next_state, reward, terminated, truncated, info = env.step(action)
+                done = terminated or truncated
+
+                state = next_state
+                ep_reward += float(reward)
+                steps += 1
+
+                if render:
+                    env.render()
+
+            print(f"[SIM] Episode {episode+1}/{num_episodes} - Reward: {ep_reward:.2f} - Steps: {steps}")
+
+
 class MultiAgentTrainer(BaseTrainer):
     """
     Trainer class for training multiple agents in a shared environment.

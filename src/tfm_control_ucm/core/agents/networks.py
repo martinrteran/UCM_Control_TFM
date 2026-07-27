@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from os import name
 
+import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
@@ -93,16 +94,17 @@ class RecurrentGRUPolicy(nn.Module):
         self.relu = nn.ReLU()
         self.gru = nn.GRU(hidden_dim, hidden_dim, batch_first=True)
         self.out = nn.Linear(hidden_dim, action_dim)
+
         self.hidden_dim = hidden_dim
         self.obs_dim = obs_dim
         self.action_dim = action_dim
 
 
-    def forward(self, x, h):
+    def forward(self, x: torch.Tensor, h: torch.Tensor):
         x = self.fc(x)
         x = self.relu(x)
-        x, h = self.gru(x.unsqueeze(1), h)
-        logits = self.out(x.squeeze(1))
+        x, h = self.gru(x, h)
+        logits = self.out(x)
         return logits, h
 
 class RecurrentGRUValue(nn.Module):
@@ -112,15 +114,16 @@ class RecurrentGRUValue(nn.Module):
         self.relu = nn.ReLU()
         self.gru = nn.GRU(hidden_dim, hidden_dim, batch_first=True)
         self.out = nn.Linear(hidden_dim, 1)
+
         self.hidden_dim = hidden_dim
         self.obs_dim = obs_dim
         self.action_dim = 1
 
-    def forward(self, x, h):
+    def forward(self, x: torch.Tensor, h: torch.Tensor):
         x = self.fc(x)
         x = self.relu(x)
-        x, h = self.gru(x.unsqueeze(1), h)
-        value = self.out(x.squeeze(1))
+        x, h = self.gru(x, h)
+        value = self.out(x).squeeze(-1)  # Remove the last dimension for value output
         return value, h
 
 

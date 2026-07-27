@@ -19,7 +19,7 @@ import torch.nn as nn
 import torch
 from torch import optim
 
-from .utils import RLAlgorithm
+from .utils import RLAlgorithm, RecurrentPPOBuffer
 
 from .networks import  GridAgentNet, PolicyNetwork, ValueNetwork, SimpleQNetwork
 
@@ -1385,6 +1385,127 @@ class PPOGRUAgent(BaseRLAgent):
         self.last_advantage   = float(advantages_t.mean().item())
 
         return self.last_loss
+
+
+class RecurrentPPOAgent(BaseRLAgent):
+    def _initialize_networks(self, hidden_dim: int = 128, **kwargs):
+        pass
+
+    def _compute_loss(self, batch: Tuple) -> torch.Tensor:
+        """
+        Compute loss for the batch.
+        
+        Algorithm-specific implementation.
+        """
+        raise NotImplementedError
+
+    def __init__(self, config: RLConfig, policy_net: nn.Module, value_net: nn.Module):
+        super().__init__(config, policy_net, value_net)
+
+        self.gamma = config.gamma
+        self.lam = getattr(config, "gae_lambda", 0.95)
+        self.clip_eps = config.clip_eps
+        self.value_coef = getattr(config, "value_coeff", 0.5)
+        self.entropy_coef = config.entropy_coeff
+
+        self.hidden_dim = policy_net.gru.hidden_size
+        self.reset_hidden()
+
+        self.buffer = RecurrentPPOBuffer(
+            obs_dim=config.obs_dim,
+            seq_len=getattr(config, "seq_len", 32),
+            gamma=self.gamma,
+            lam=self.lam,
+            device=self.device
+        )
+
+        self.last_log_prob = torch.tensor(0.0, device=self.device)
+        self.last_entropy = 0.0
+        self.last_policy_loss = 0.0
+        self.last_value_loss = 0.0
+
+    def reset_hidden(self, batch_size: int = 1):
+        self.h_policy = torch.zeros(1, batch_size, self.policy_net.hidden_dim, device=self.device)
+        self.h_value  = torch.zeros(1, batch_size, self.value_net.hidden_dim, device=self.device)
+
+    def _to_tensor(self, s):
+        if isinstance(s, np.ndarray):
+            s = torch.from_numpy(s).float()
+        elif isinstance(s, (list, tuple)):
+            s = torch.tensor(s, dtype=torch.float32)
+        return s.to(self.device)
+
+    def select_action(self, state, training: bool = True):
+        state_t = self._to_tensor(state).unsqueeze(0).unsqueeze(1)  # (batch=1, seq=1, obs)
+
+        logits, self.h_policy = self.policy_net(state_t, self.h_policy)
+        logits = logits.squeeze(1)  # (1, action_dim)
+        dist = torch.distributions.Categorical(logits=logits)
+
+        if training:
+            action = dist.sample()
+        else:
+            action = torch.argmax(logits, dim=-1)
+
+        log_prob = dist.log_prob(action)
+        self.last_log_prob = log_prob.detach()
+
+        value_seq, self.h_value = self.value_net(state_t, self.h_value)
+        value = value_seq.squeeze(1)  # (1,)
+        return int(action.item()), float(log_prob.item()), float(value.item())
+
+    def store_episode(self, states, actions, rewards, dones, log_probs, values):
+        self.buffer.store_episode(states, actions, rewards, dones, log_probs, values)
+
+    def _value_fn(self, state):
+        s = self._to_tensor(state).unsqueeze(0).unsqueeze(1)
+        h = torch.zeros_like(self.h_value)
+        v_seq, _ = self.value_net(s, h)
+        return float(v_seq.squeeze(1).item())
+
+    def train_step(self):
+        seq_states, seq_actions, seq_log_probs, seq_adv, seq_ret = self.buffer.build_sequences(self._value_fn)
+
+        # convertir a batch tensor
+        states_t   = torch.nn.utils.rnn.pad_sequence(seq_states, batch_first=True).to(self.device)
+        actions_t  = torch.nn.utils.rnn.pad_sequence(seq_actions, batch_first=True).to(self.device)
+        old_log_probs_t = torch.nn.utils.rnn.pad_sequence(seq_log_probs, batch_first=True).to(self.device)
+        advantages_t    = torch.nn.utils.rnn.pad_sequence(seq_adv, batch_first=True).to(self.device)
+        returns_t       = torch.nn.utils.rnn.pad_sequence(seq_ret, batch_first=True).to(self.device)
+
+        batch_size, seq_len, _ = states_t.shape
+        h_p = torch.zeros(1, batch_size, self.policy_net.hidden_dim, device=self.device)
+        h_v = torch.zeros(1, batch_size, self.value_net.hidden_dim, device=self.device)
+
+        logits, _ = self.policy_net(states_t, h_p)
+        dist = torch.distributions.Categorical(logits=logits)
+        new_log_probs = dist.log_prob(actions_t)
+        entropy = dist.entropy().mean()
+
+        values_pred, _ = self.value_net(states_t, h_v)
+
+        ratio = torch.exp(new_log_probs - old_log_probs_t)
+        surr1 = ratio * advantages_t
+        surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * advantages_t
+        policy_loss = -torch.min(surr1, surr2).mean()
+
+        value_loss = F.mse_loss(values_pred, returns_t)
+
+        loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        self.buffer.clear()
+
+        self.last_policy_loss = float(policy_loss.item())
+        self.last_value_loss  = float(value_loss.item())
+        self.last_entropy     = float(entropy.item())
+
+        return float(loss.item())
+
+
 
 class AgentFactory:
     @staticmethod

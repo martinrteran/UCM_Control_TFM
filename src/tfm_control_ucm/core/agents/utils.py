@@ -239,6 +239,78 @@ class GridReplayBuffer:
     def __len__(self): return len(self.buffer)
     def capacity(self): return self.buffer.maxlen
 
+class RecurrentPPOBuffer:
+    def __init__(self, obs_dim, seq_len: int, gamma: float, lam: float, device: str = "cuda"):
+        self.obs_dim = obs_dim
+        self.seq_len = seq_len
+        self.gamma = gamma
+        self.lam = lam
+        self.device = torch.device(device)
+        self.episodes = []  # lista de episodios
+
+    def store_episode(self, states, actions, rewards, dones, log_probs, values):
+        self.episodes.append({
+            "states":  states,
+            "actions": actions,
+            "rewards": rewards,
+            "dones":   dones,
+            "log_probs": log_probs,
+            "values":  values
+        })
+
+    def _compute_gae_episode(self, rewards, values, dones, last_value):
+        rewards = np.array(rewards, dtype=np.float32)
+        dones   = np.array(dones,   dtype=np.float32)
+        values  = np.array(list(values) + [last_value], dtype=np.float32)
+
+        advantages = np.zeros_like(rewards)
+        gae = 0.0
+        for t in reversed(range(len(rewards))):
+            delta = rewards[t] + self.gamma * values[t+1] * (1 - dones[t]) - values[t]
+            gae = delta + self.gamma * self.lam * (1 - dones[t]) * gae
+            advantages[t] = gae
+
+        returns = advantages + values[:-1]
+        return advantages, returns
+
+    def build_sequences(self, value_fn):
+        # value_fn: función que da V(s) para el último estado
+        seq_states   = []
+        seq_actions  = []
+        seq_log_probs = []
+        seq_adv      = []
+        seq_ret      = []
+
+        for ep in self.episodes:
+            states  = ep["states"]
+            actions = ep["actions"]
+            rewards = ep["rewards"]
+            dones   = ep["dones"]
+            log_probs = ep["log_probs"]
+            values  = ep["values"]
+
+            last_state = states[-1]
+            last_value = value_fn(last_state)
+
+            advantages, returns = self._compute_gae_episode(rewards, values, dones, last_value)
+
+            # trocear en secuencias
+            T = len(states)
+            for start in range(0, T, self.seq_len):
+                end = min(start + self.seq_len, T)
+                
+                seq_states.append(torch.tensor(np.array(states[start:end]), dtype=torch.float32))
+                seq_actions.append(torch.tensor(np.array(actions[start:end]), dtype=torch.long))
+                seq_log_probs.append(torch.tensor(np.array(log_probs[start:end]), dtype=torch.float32))
+                seq_adv.append(torch.tensor(np.array(advantages[start:end]), dtype=torch.float32))
+                seq_ret.append(torch.tensor(np.array(returns[start:end]), dtype=torch.float32))
+
+        # convertir a batch
+        # padding opcional si quieres secuencias de igual longitud
+        return seq_states, seq_actions, seq_log_probs, seq_adv, seq_ret
+
+    def clear(self):
+        self.episodes = []
 
 
 def build_ppo_actor_critic(obs_dim: int, n_actions: int, hidden_sizes=(256, 256), device="cpu"):
