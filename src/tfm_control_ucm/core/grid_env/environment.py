@@ -328,7 +328,7 @@ class Grid_Robot_Sections_Env(gym.Env):
 
         previous_dist2goal = self._dist_to_goal()
         moved = self.robot.move(self.map, action)
-        truncated = not moved
+        hit_obstacle = not moved
 
 
         obs_flat = self._get_observation()
@@ -346,6 +346,7 @@ class Grid_Robot_Sections_Env(gym.Env):
         reward -= 0.05
 
         # 3. Bounded obstacle-proximity penalty — no division, no blow-up
+        closeness = 0.0
         if min_dist < self._safety_margin: # TODO - Try different safety_margins
             closeness = (self._safety_margin - min_dist) / self._safety_margin  # in [0, 1]
             reward -= closeness * self._max_proximity_penalty
@@ -355,12 +356,17 @@ class Grid_Robot_Sections_Env(gym.Env):
         if dist2goal < 1:
             done = True
             reward += 20.0
-
-        truncated = truncated or bool(self.steps >= self.max_steps)
-        if truncated:
-            reward -= 5.0
         
-        info = {'max_steps_reached': self.steps >= self.max_steps, 'hit_obstacle': not moved, 'min_dist': min_dist, 'dist2goal': dist2goal, 'progress': progress}
+        if hit_obstacle:
+            reward -= 5.0
+            
+        truncated = hit_obstacle or bool(self.steps >= self.max_steps)
+        
+        
+        info = {'max_steps_reached': self.steps >= self.max_steps, 'hit_obstacle': hit_obstacle, 'min_dist': min_dist, 'dist2goal': dist2goal, 'progress': progress
+                , 'reward': reward, 'steps': self.steps, 'goal_pos': self.goal_pos, 'robot_pos': self.robot.position, 
+                'reward_components': {'progress': progress * 10.0, 'step_cost': -0.05, 'proximity_penalty': -closeness * self._max_proximity_penalty if min_dist < self._safety_margin else 0.0, 
+                                      'terminal_reward': 20.0 if dist2goal < 1 else (-5.0 if hit_obstacle else 0.0)}}
 
         return obs_flat, reward, done, truncated, info
     

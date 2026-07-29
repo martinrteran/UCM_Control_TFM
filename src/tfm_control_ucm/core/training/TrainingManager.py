@@ -301,10 +301,22 @@ class PPOTrainer(BaseTrainer):
                         dones.append(done)
                         log_probs.append(log_prob)
 
+                        if info:
+                            writer.add_scalar("Info/Max Steps Reached", int(info.get('max_steps_reached', False)), episode)
+                            for component, value in info.get('reward_components', {}).items():
+                                writer.add_scalar(f"Reward/Components/{component}", value, global_step)
+                            writer.add_scalar(f"Reward/Total/Steps", info.get('reward', 0), global_step)
+                            # writer.add_scalar("Info/Hit Obstacle", int(info.get('hit_obstacle', False)), episode)
+                            # writer.add_scalar("Info/Min Dist", info.get('min_dist', 0), episode)
+                            # writer.add_scalar("Info/Max Dist", info.get('max_dist', 0), episode)
+                            # writer.add_scalar("Info/Avg Dist", info.get('avg_dist', 0), episode)
+                        if self.config.render:
+                            env.render()
+                        global_step += 1
                         state = next_state
 
                     # Final value
-                    last_value = agent.value_net(agent._to_tensor(state).unsqueeze(0)).item()
+                    last_value = agent.value_net(agent._to_tensor(state)).item()
                     values.append(last_value)
 
                     # GAE
@@ -336,19 +348,19 @@ class PPOTrainer(BaseTrainer):
                     ep_steps = len(states)
                     ep_reward = sum(rewards)
                     #with Timer("Logging", sync_cuda=False):
-                    writer.add_scalar("Policy/Value", last_value, episode)
+                    writer.add_scalar("Agent/Policy/Value", last_value, episode)
                     if loss is not None:
-                        writer.add_scalar("Policy/Loss", loss, episode)
-                    writer.add_scalar("Policy/Entropy", agent.last_entropy, episode)
-                    writer.add_scalar("Policy/PolicyLoss", agent.last_policy_loss, episode)
-                    writer.add_scalar("Policy/ValueLoss", agent.last_value_loss, episode)
+                        writer.add_scalar("Agent/Policy/Loss", loss, episode)
+                    writer.add_scalar("Agent/Policy/Entropy", agent.last_entropy, episode)
+                    writer.add_scalar("Agent/Policy/PolicyLoss", agent.last_policy_loss, episode)
+                    writer.add_scalar("Agent/Policy/ValueLoss", agent.last_value_loss, episode)
 
                     writer.add_scalar("Steps/Episode",           ep_steps,                   episode)
                     writer.add_scalar("Steps/Min",       min_steps,                  episode)
                     writer.add_scalar("Steps/Ratio",     ep_steps/min_steps if min_steps>0 else 0, episode)
                     
                     
-                    writer.add_scalar(f"Reward/Total", ep_reward, episode)
+                    writer.add_scalar(f"Reward/Total/Episode", ep_reward, episode)
 
                     writer.add_scalar(f"Done/Success", int(terminated), episode)
                     writer.add_scalar(f"Done/Max Steps Reached", info.get('max_steps_reached', False), episode)
@@ -397,7 +409,7 @@ class PPOGRUTrainer(BaseTrainer):
         eps_step = eps_step or self.config.eps_step
 
         path_planner = PathPlanner(env.map.grid)  # type: ignore
-
+    
         with SummaryWriter(log_dir=f"{self.logs_save_dir}/{agent.config.name}") as writer:
             with InterruptHandler(agent, writer, f"{self.models_save_dir}/{agent.config.name}") as handler:
                 for episode in episodes:
@@ -451,6 +463,15 @@ class PPOGRUTrainer(BaseTrainer):
                         log_probs.append(log_prob)
 
                         state = next_state
+                        if info:
+                            writer.add_scalar("Info/Max Steps Reached", int(info.get('max_steps_reached', False)), episode)
+                            for component, value in info.get('reward_components', {}).items():
+                                writer.add_scalar(f"Reward/Components/{component}", value, global_step)
+                            writer.add_scalar(f"Reward/Total/Steps", info.get('reward', 0), global_step)
+                        
+                        if self.config.render:
+                            env.render()
+                        global_step += 1
 
                     # Entrenar PPO (GAE + update dentro del agente)
                     loss = agent.train_step()
@@ -466,18 +487,18 @@ class PPOGRUTrainer(BaseTrainer):
                     advantage    = agent.last_advantage
 
                     # logs principales
-                    writer.add_scalar("Loss/Total", loss, episode)
-                    writer.add_scalar("Loss/Policy", policy_loss, episode)
-                    writer.add_scalar("Loss/Value", value_loss, episode)
-                    writer.add_scalar("Entropy/Episode", entropy, episode)
-                    writer.add_scalar("Value/Last", last_value, episode)
-                    writer.add_scalar("Advantage/Mean", advantage, episode)
+                    writer.add_scalar("Agent/Loss/Total", loss, episode)
+                    writer.add_scalar("Agent/Loss/Policy", policy_loss, episode)
+                    writer.add_scalar("Agent/Loss/Value", value_loss, episode)
+                    writer.add_scalar("Agent/Entropy/Episode", entropy, episode)
+                    writer.add_scalar("Agent/Value/Last", last_value, episode)
+                    writer.add_scalar("Agent/Advantage/Mean", advantage, episode)
 
                     writer.add_scalar("Steps/Episode", ep_steps, episode)
                     writer.add_scalar("Steps/Min/Episode", min_steps, episode)
                     writer.add_scalar("Steps/Ratio/Episode", ep_steps / min_steps if min_steps > 0 else 0, episode)
 
-                    writer.add_scalar("Reward/Total", ep_reward, episode)
+                    writer.add_scalar("Reward/Total/Episode", ep_reward, episode)
 
                     writer.add_scalar("Done/Success", int(terminated), episode)
                     writer.add_scalar("Done/Max Steps Reached", info.get('max_steps_reached', False), episode)
@@ -499,6 +520,7 @@ class RecurrentPPOTrainer(BaseTrainer):
         num_episodes = num_episodes or self.config.num_episodes
         episodes = tqdm.tqdm(range(num_episodes), desc="Training") if self.config.useTQDM else range(num_episodes)
         path_planner = PathPlanner(env.map.grid)
+        global_step = 0
         with SummaryWriter(log_dir=f"{self.logs_save_dir}/{agent.config.name}") as writer:
             with InterruptHandler(agent, writer, f"{self.models_save_dir}/{agent.config.name}") as handler:
                 for episode in episodes:
@@ -537,8 +559,25 @@ class RecurrentPPOTrainer(BaseTrainer):
                         values.append(value)
 
                         state = next_state
+                        
+                        if info:
+                            writer.add_scalar("Info/Max Steps Reached", int(info.get('max_steps_reached', False)), episode)
+                            for component, value in info.get('reward_components', {}).items():
+                                writer.add_scalar(f"Reward/Components/{component}", value, global_step)
+                            writer.add_scalar(f"Reward/Total/Steps", info.get('reward', 0), global_step)
+                            # writer.add_scalar("Info/Hit Obstacle", int(info.get('hit_obstacle', False)), episode)
+                            # writer.add_scalar("Info/Min Dist", info.get('min_dist', 0), episode)
+                            # writer.add_scalar("Info/Max Dist", info.get('max_dist', 0), episode)
+                            # writer.add_scalar("Info/Avg Dist", info.get('avg_dist', 0), episode)
+
+
+
+                        if self.config.render:
+                            env.render()
+
 
                         ep_steps += 1
+                        global_step += 1
 
                     agent.store_episode(states, actions, rewards, dones, log_probs, values)
 
@@ -547,16 +586,16 @@ class RecurrentPPOTrainer(BaseTrainer):
                     
                     if loss is not None:
                         writer.add_scalar("Policy/Loss", loss, episode)
-                    writer.add_scalar("Loss/Policy", agent.last_policy_loss, episode)
-                    writer.add_scalar("Loss/Value",  agent.last_value_loss,  episode)
-                    writer.add_scalar("Entropy/Episode", agent.last_entropy, episode)
+                    writer.add_scalar("Policy/Policy/Loss", agent.last_policy_loss, episode)
+                    writer.add_scalar("Policy/Value/Loss",  agent.last_value_loss,  episode)
+                    writer.add_scalar("Policy/Entropy", agent.last_entropy, episode)
 
                     writer.add_scalar("Steps/Episode",           ep_steps,                   episode)
                     writer.add_scalar("Steps/Min",       min_steps,                  episode)
                     writer.add_scalar("Steps/Ratio",     ep_steps/min_steps if min_steps>0 else 0, episode)
                     
                     ep_reward = sum(rewards)
-                    writer.add_scalar(f"Reward/Total", ep_reward, episode)
+                    writer.add_scalar(f"Reward/Total/Episode", ep_reward, episode)
 
                     writer.add_scalar(f"Done/Success", int(terminated), episode)
                     writer.add_scalar(f"Done/Max Steps Reached", info.get('max_steps_reached', False), episode)
