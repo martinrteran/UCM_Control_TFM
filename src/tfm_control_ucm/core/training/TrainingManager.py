@@ -255,7 +255,7 @@ class PPOTrainer(BaseTrainer):
                     log_probs = []
 
                     done = False
-                    terminated= False
+                    truncated= False
 
                     start_dist = state[-2] # state[-1][0]
                     start_pos = env.robot.position# type: ignore
@@ -269,7 +269,7 @@ class PPOTrainer(BaseTrainer):
                     loss = None
                     info = {}
 
-                    while not done:
+                    while not done and not truncated:
                         if self.config.render:
                             env.render()
 
@@ -291,8 +291,7 @@ class PPOTrainer(BaseTrainer):
 
                         # 4. Step
                         # with Timer("Environment Step"):
-                        next_state, reward, terminated, truncated, info = env.step(action)
-                        done = terminated or truncated
+                        next_state, reward, done, truncated, info = env.step(action)
 
                         # 5. Store
                         states.append(state)
@@ -304,12 +303,12 @@ class PPOTrainer(BaseTrainer):
                         if info:
                             writer.add_scalar("Info/Max Steps Reached", int(info.get('max_steps_reached', False)), episode)
                             for component, value in info.get('reward_components', {}).items():
-                                writer.add_scalar(f"Reward/Components/{component}", value, global_step)
-                            writer.add_scalar(f"Reward/Total/Steps", info.get('reward', 0), global_step)
-                            # writer.add_scalar("Info/Hit Obstacle", int(info.get('hit_obstacle', False)), episode)
-                            # writer.add_scalar("Info/Min Dist", info.get('min_dist', 0), episode)
-                            # writer.add_scalar("Info/Max Dist", info.get('max_dist', 0), episode)
-                            # writer.add_scalar("Info/Avg Dist", info.get('avg_dist', 0), episode)
+                                writer.add_scalar(f"Info/Reward/Components/{component}", value, global_step)
+                            writer.add_scalar(f"Info/Reward/Total/Steps", info.get('reward', 0), global_step)
+                            writer.add_scalar("Info/Reward/min/Steps", info.get('componente_reward_min', 0), global_step)
+                            writer.add_scalar("Info/Reward/max/Steps", info.get('componente_reward_max', 0), global_step)
+                            writer.add_scalar("Info/Reward/diff/Steps", info.get('componente_reward_diff', 0), global_step)
+
                         if self.config.render:
                             env.render()
                         global_step += 1
@@ -348,21 +347,21 @@ class PPOTrainer(BaseTrainer):
                     ep_steps = len(states)
                     ep_reward = sum(rewards)
                     #with Timer("Logging", sync_cuda=False):
-                    writer.add_scalar("Agent/Policy/Value", last_value, episode)
+                    writer.add_scalar("Agent/Value", last_value, episode)
                     if loss is not None:
-                        writer.add_scalar("Agent/Policy/Loss", loss, episode)
-                    writer.add_scalar("Agent/Policy/Entropy", agent.last_entropy, episode)
-                    writer.add_scalar("Agent/Policy/PolicyLoss", agent.last_policy_loss, episode)
-                    writer.add_scalar("Agent/Policy/ValueLoss", agent.last_value_loss, episode)
+                        writer.add_scalar("Agent/Loss", loss, episode)
+                    writer.add_scalar("Agent/Entropy", agent.last_entropy, episode)
+                    writer.add_scalar("Agent/Policy/Loss", agent.last_policy_loss, episode)
+                    writer.add_scalar("Agent/Value/Loss", agent.last_value_loss, episode)
 
                     writer.add_scalar("Steps/Episode",           ep_steps,                   episode)
                     writer.add_scalar("Steps/Min",       min_steps,                  episode)
                     writer.add_scalar("Steps/Ratio",     ep_steps/min_steps if min_steps>0 else 0, episode)
                     
                     
-                    writer.add_scalar(f"Reward/Total/Episode", ep_reward, episode)
+                    writer.add_scalar(f"Done/Reward/Episode", ep_reward, episode)
 
-                    writer.add_scalar(f"Done/Success", int(terminated), episode)
+                    writer.add_scalar(f"Done/Success", done, episode)
                     writer.add_scalar(f"Done/Max Steps Reached", info.get('max_steps_reached', False), episode)
                     writer.add_scalar(f"Done/Hit Obstacle", info.get('hit_obstacle', False), episode)
 

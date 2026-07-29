@@ -338,9 +338,12 @@ class Grid_Robot_Sections_Env(gym.Env):
         dist2goal = obs[-1][0]
         min_dist = np.min(obs[:-1, 0][obs[:-1, 0] >= 0]) if np.any(obs[:-1, 0] >= 0) else self._max_range
 
+        info = {'max_steps_reached': self.steps >= self.max_steps, 'hit_obstacle': hit_obstacle, 'min_dist': min_dist, 'dist2goal': dist2goal,'steps': self.steps, 'goal_pos': self.goal_pos, 'robot_pos': self.robot.position}
+
         # 1. Progress toward goal — the dominant signal, bounded per-step
-        progress = (previous_dist2goal - dist2goal) / self._map_diagonal
-        reward = progress * 10.0
+        progress = 10.0 * (previous_dist2goal - dist2goal) / self._map_diagonal
+        reward = progress * 1.0
+        info['reward_components'] = {'progress': progress, 'step_cost': -0.05, 'proximity_penalty': 0.0, 'terminal_reward': 0.0}
 
         # 2. Small constant step cost so idling/short paths are preferred over long ones
         reward -= 0.05
@@ -349,24 +352,36 @@ class Grid_Robot_Sections_Env(gym.Env):
         closeness = 0.0
         if min_dist < self._safety_margin: # TODO - Try different safety_margins
             closeness = (self._safety_margin - min_dist) / self._safety_margin  # in [0, 1]
-            reward -= closeness * self._max_proximity_penalty
+            proximity_penalty = self._max_proximity_penalty * closeness
+            reward -= proximity_penalty
+            info['reward_components']['proximity_penalty'] = -proximity_penalty
+
 
         # 5. Terminal reward/penalty — clearly bigger than any step reward, but not extreme
         done = False
         if dist2goal < 1:
             done = True
             reward += 20.0
+            info['reward_components']['terminal_reward'] = 20.0
         
-        if hit_obstacle:
+        if not done and hit_obstacle:
             reward -= 5.0
+            info['reward_components']['terminal_reward'] = -5.0
             
         truncated = hit_obstacle or bool(self.steps >= self.max_steps)
         
+        componente_max = abs(info['reward_components']['progress'])
+        componente_min = abs(info['reward_components']['progress'])
+        for component in info['reward_components']:
+            if abs(info['reward_components'][component]) > componente_max:
+                componente_max = abs(info['reward_components'][component])
+            if abs(info['reward_components'][component]) < componente_min:
+                componente_min = abs(info['reward_components'][component])
         
-        info = {'max_steps_reached': self.steps >= self.max_steps, 'hit_obstacle': hit_obstacle, 'min_dist': min_dist, 'dist2goal': dist2goal, 'progress': progress
-                , 'reward': reward, 'steps': self.steps, 'goal_pos': self.goal_pos, 'robot_pos': self.robot.position, 
-                'reward_components': {'progress': progress * 10.0, 'step_cost': -0.05, 'proximity_penalty': -closeness * self._max_proximity_penalty if min_dist < self._safety_margin else 0.0, 
-                                      'terminal_reward': 20.0 if dist2goal < 1 else (-5.0 if hit_obstacle else 0.0)}}
+        info['componente_reward_min'] = componente_min
+        info['componente_reward_max'] = componente_max
+        info['componente_reward_diff'] = componente_max - componente_min
+
 
         return obs_flat, reward, done, truncated, info
     

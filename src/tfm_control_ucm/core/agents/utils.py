@@ -54,10 +54,7 @@ class RLConfig:
     batch_size: int = 64 # Batch size for training
     buffer_size: int = 100_000 # Replay buffer size
     
-    # Exploration
-    eps_start: float = 1.0 # Initial epsilon for epsilon-greedy exploration (DQN-family)
-    eps_end: float = 0.05 # Final epsilon after decay
-    eps_decay: int = 100_000 # Steps over which to decay epsilon
+    
     
     # General
     max_grad_norm: float = 10.0 # Max gradient norm for clipping
@@ -94,6 +91,11 @@ class DQNConfig(RLConfig):
     tau: float = 0.005
     double_dqn: bool = True
 
+    # Exploration
+    eps_start: float = 1.0 # Initial epsilon for epsilon-greedy exploration (DQN-family)
+    eps_end: float = 0.05 # Final epsilon after decay
+    eps_decay: int = 100_000 # Steps over which to decay epsilon
+
 
 @dataclass
 class SACConfig(RLConfig):
@@ -103,6 +105,11 @@ class SACConfig(RLConfig):
     target_update: int = 1000
     double_dqn: bool = True
 
+    # Exploration
+    eps_start: float = 1.0 # Initial epsilon for epsilon-greedy exploration (DQN-family)
+    eps_end: float = 0.05 # Final epsilon after decay
+    eps_decay: int = 100_000 # Steps over which to decay epsilon
+
 @dataclass
 class PPOConfig(RLConfig):
     gae_lambda: float = 0.95# GAE lambda for advantage estimation
@@ -111,7 +118,11 @@ class PPOConfig(RLConfig):
     entropy_coeff: float = 0.01# Entropy coefficient for exploration in policy gradient methods
     rollout_steps: int = 2048
     clip_eps: float = 0.2 # PPO clipping epsilon
+    value_coeff: float = 0.5 # 
 
+@dataclass
+class PPORNNConfig(PPOConfig):
+    seq_len: int = 32
 
 import numpy as np
 import torch
