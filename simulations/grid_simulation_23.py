@@ -18,19 +18,20 @@ lidar_config = {"num_rays": n_sections*15, "max_range": 10, "fov": 2*np.pi, "noi
 env = grid_env.Grid_Robot_Sections_Env(map=mapa_simple, robot=robot_simple, cell_size=10, 
                 max_iteration_steps=400, num_sections=n_sections, lidar_config=lidar_config, render_mode="human")
 env._max_proximity_penalty = 1e-2# 1.5
-env._safety_margin = env._max_range*2/3 # 1
+env._safety_margin = env._max_range*2/3#1
 
 action_dim = env.get_action_dim()
 obv_dim = env.get_observation_dim()
 
 rl_config = PPOConfig(obs_dim=obv_dim, action_dim=action_dim, algorithm=RLAlgorithm.PPO,
-                     device=device,name="PPO Agent Test", batch_size=64, lr=1e-3, buffer_size=100_000,
+                     device=device,name="PPO Agent", batch_size=64, lr=1e-3, buffer_size=100_000,
                      max_grad_norm=5.0,
                      clip_eps=0.2, entropy_coeff=0.01, value_coeff=0.5, gamma=0.99, gae_lambda=0.95)
 
 policy_net = SimpleQNetwork(obs_dim=obv_dim, action_dim=action_dim, num_hidden_layers=3, hidden_dim=64).to(device)
 target_net = ValueNetwork(obs_dim=obv_dim, hidden_dim=64).to(device)
 agent = PPOAgent(rl_config, policy_network = policy_net, value_network = target_net)
+agent.load(rf"./checkpoints/Test/23/PPO Agent/final.pth")
 
 t_config = training_manager.TrainerConfig(
     eps_step=4,
@@ -41,5 +42,5 @@ singleTrainer = training_manager.PPOTrainer("./runs/Test/23","./checkpoints/Test
 singleTrainer.add_agents(agent)
 singleTrainer.add_environments(env)
 
-singleTrainer.train()
+singleTrainer.simulate(agent,env,50,True)
 # Timer.report()

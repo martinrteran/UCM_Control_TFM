@@ -1,5 +1,5 @@
 {
-    "name": "simple_map",
+    "name": "4_obstacles",
     "size": [60,60],
     "obstacles": [
         {"corner":[10,15], "size":[10,10]}

@@ -241,11 +241,12 @@ class PPOTrainer(BaseTrainer):
         episodes = tqdm.tqdm(range(num_episodes),desc="Training") if self.config.useTQDM else range(num_episodes)
         eps_step = eps_step or self.config.eps_step
         
-        path_planner = PathPlanner(env.map.grid) # type: ignore
+        
         with SummaryWriter(log_dir=f"{self.logs_save_dir}/{agent.config.name}") as writer:
             with InterruptHandler(agent, writer,f"{self.models_save_dir}/{agent.config.name}") as handler:
                 for episode in episodes:
                     state, _ = env.reset()
+                    path_planner = PathPlanner(env.map.grid) # type: ignore
 
                     states = []
                     actions = []
@@ -270,9 +271,6 @@ class PPOTrainer(BaseTrainer):
                     info = {}
 
                     while not done and not truncated:
-                        if self.config.render:
-                            env.render()
-
                         # 1. Value
                         # with Timer("Value Computation", sync_cuda=True):
                         value = agent.value_net(agent._to_tensor(state)).item()
@@ -301,10 +299,10 @@ class PPOTrainer(BaseTrainer):
                         log_probs.append(log_prob)
 
                         if info:
-                            writer.add_scalar("Info/Max Steps Reached", int(info.get('max_steps_reached', False)), episode)
+                            #writer.add_scalar("Info/Max Steps Reached", int(info.get('max_steps_reached', False)), episode)
                             for component, value in info.get('reward_components', {}).items():
                                 writer.add_scalar(f"Info/Reward/Components/{component}", value, global_step)
-                            writer.add_scalar(f"Info/Reward/Total/Steps", info.get('reward', 0), global_step)
+                            writer.add_scalar(f"Info/Reward/Total/Steps", reward, global_step)
                             writer.add_scalar("Info/Reward/min/Steps", info.get('componente_reward_min', 0), global_step)
                             writer.add_scalar("Info/Reward/max/Steps", info.get('componente_reward_max', 0), global_step)
                             writer.add_scalar("Info/Reward/diff/Steps", info.get('componente_reward_diff', 0), global_step)
