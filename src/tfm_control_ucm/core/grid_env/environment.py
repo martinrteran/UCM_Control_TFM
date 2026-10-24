@@ -13,11 +13,11 @@ from __future__ import annotations
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-from typing import Optional, Union, Iterable, Dict, List
+from typing import Callable, Optional, Union, Iterable, Dict, List
 
 from .map import GridMap
-from .robot import GridRobot, GridRobotNotTurning
-from .sensor import GridLidar, GridLidar_2D
+from .robot import GridRobot, GridRobotNotTurning, Robot
+from .sensor import GridLidar
 import torch
 from torchrl.envs import EnvBase
 from torchrl.data import (
@@ -29,8 +29,80 @@ from torchrl.data import (
 from tensordict import TensorDict
 
 from tfm_control_ucm.renderers.grid_renderer import PygameRenderer, PygameRenderer_Image_Lidar
+from tfm_control_ucm.core.rewards import RewardCallable, StepContext, evaluate_reward, summarize_components
 
-class Grid_Robot_Env(gym.Env):
+class RewardedStepMixin:
+    """
+    End-of-step logic shared by the grid environments.
+
+    The environment decides whether the episode ended (goal reached, collision,
+    step limit) and the injected reward function only scores the step, so the
+    success rate means the same thing whatever reward an experiment uses.
+
+    Expects the environment to define robot, goal_pos, steps, max_steps, lidar,
+    reward_fn, _map_diagonal and _dist_to_goal().
+    """
+    _goal_tolerance = 1.0 # The goal is reached when the robot is closer than this (cells)
+
+    @staticmethod
+    def _check_reward_fn(reward_fn: RewardCallable):
+        if not callable(reward_fn): raise TypeError("The reward_fn must be a RewardFunction or a callable taking a StepContext")
+
+    def _start_episode(self, obs: np.ndarray):
+        """Reset the per-episode memory used to build the next StepContext."""
+        self._previous_action = -1 # Do nothing
+        self._previous_obs = obs.copy()
+        self._previous_dist_to_goal = float(self._dist_to_goal()) # type: ignore
+
+    def _finish_step(self, action: int, obs: np.ndarray, hit_obstacle: bool):
+        """
+        Decide termination, score the step and update the per-episode memory.
+
+        Parameters
+        ----------
+        action : int
+            Action taken this step.
+        obs : np.ndarray
+            Observation after the step.
+        hit_obstacle : bool
+            True if the robot could not move because of a wall or an obstacle.
+
+        Returns
+        -------
+        tuple
+            (reward, terminated, truncated, info) as expected by gymnasium's step().
+        """
+        dist_to_goal = float(self._dist_to_goal()) # type: ignore
+        rays = np.asarray(obs).reshape((-1, 2))[:-1, 0]
+        detected = rays[rays >= 0]
+        min_obstacle_dist = float(detected.min()) if detected.size else float(self.lidar.max_range) # type: ignore
+
+        reached_goal = dist_to_goal < self._goal_tolerance
+        max_steps_reached = bool(self.steps >= self.max_steps) # type: ignore
+        terminated = reached_goal
+        truncated = not terminated and (hit_obstacle or max_steps_reached)
+
+        ctx = StepContext(action=int(action), previous_action=int(self._previous_action),
+                          obs=obs, previous_obs=self._previous_obs, # type: ignore
+                          dist_to_goal=dist_to_goal, previous_dist_to_goal=self._previous_dist_to_goal,
+                          min_obstacle_dist=min_obstacle_dist, hit_obstacle=hit_obstacle,
+                          reached_goal=reached_goal, max_steps_reached=max_steps_reached,
+                          steps=self.steps, max_steps=int(self.max_steps), # type: ignore
+                          robot_pos=np.asarray(self.robot.position), goal_pos=np.asarray(self.goal_pos), # type: ignore
+                          map_diagonal=float(self._map_diagonal), lidar_max_range=float(self.lidar.max_range)) # type: ignore
+        reward, components = evaluate_reward(self.reward_fn, ctx) # type: ignore
+
+        info = {'reached_goal': reached_goal, 'hit_obstacle': hit_obstacle, 'max_steps_reached': max_steps_reached,
+                'dist2goal': dist_to_goal, 'min_dist': min_obstacle_dist, 'steps': self.steps, # type: ignore
+                'goal_pos': self.goal_pos, 'robot_pos': self.robot.position, # type: ignore
+                'reward': reward, 'reward_components': components, **summarize_components(components)}
+
+        self._previous_action = action
+        self._previous_obs = obs.copy()
+        self._previous_dist_to_goal = dist_to_goal
+        return reward, terminated, truncated, info
+
+class Grid_Robot_Env(RewardedStepMixin, gym.Env):
     """
     Docstring for Robot_Grid_Env
     
@@ -43,14 +115,16 @@ class Grid_Robot_Env(gym.Env):
     
     def __init__(self, *,
                 map: GridMap,
-                robot: GridRobotNotTurning,
+                robot: Robot,
+                reward_fn: RewardCallable,
                 lidar_config: Optional[Dict] = None,
                 max_iteration_steps: Union[int,np.integer] = 10_000,
                 render_mode: Optional[str] = None,
                 cell_size: int = 32
                 ) -> None:
         if not isinstance(map, GridMap): raise TypeError("The map must be of type GridMap")
-        if not isinstance(robot, GridRobotNotTurning): raise TypeError("The robot must be of type GridRobotNotTurning")
+        if not isinstance(robot, Robot): raise TypeError("The robot must be of type Robot")
+        self._check_reward_fn(reward_fn)
         if lidar_config: 
             if any(key not in GridLidar.config_keys() for key in lidar_config.keys()): raise ValueError(f"One of the configuration keys for the lidar is not correct. The configuration keys are: {', '.join(GridLidar.config_keys())}")
             elif lidar_config['num_rays'] < self._min_num_rays: raise ValueError(f"The field 'num_rays' (number of rays) must be greater or equal to {self._min_num_rays}")
@@ -70,11 +144,14 @@ class Grid_Robot_Env(gym.Env):
         max_map_distance = np.sqrt(np.sum(np.array(self.map.grid.shape) **2))
         self._map_diagonal = max_map_distance
 
-        self.action_space = spaces.Discrete(3,dtype=np.int8) # One for move foward and bakward and another one for changing orientation
+        self.action_space = spaces.Discrete(robot.NUM_ACTIONS, dtype=np.int8) # One for move foward and bakward and another one for changing orientation
         self.observation_space = spaces.Box( low=np.array([[-1, -np.pi]] * self._min_num_rays + [[0.0, -np.pi]]), high=np.array([[self._max_range, np.pi]] * self._min_num_rays + [[max_map_distance, np.pi]]))
 
         self.steps = 0
         self.cell_size = cell_size
+        self.reward_fn = reward_fn
+        self._previous_action = -1 # Do nothing
+        self._previous_obs = None
     
     def get_observation_shape(self):
         return self.observation_space.shape
@@ -89,8 +166,8 @@ class Grid_Robot_Env(gym.Env):
         return self.action_space.shape
 
     def _get_observation(self):
-        scanning = self.lidar.scan(self.map, self.robot.position, np.asarray(0.0))
-        
+        scanning = self.lidar.scan(self.map, self.robot.position, np.asarray(0.0)).cpu().numpy()
+
         idx = np.argsort(scanning[:,0])
         scanning = scanning[idx[::-1]] # descending order
         
@@ -128,55 +205,31 @@ class Grid_Robot_Env(gym.Env):
             if self.map.is_free(r, c) and dist_to_robot > self._min_separation_distance:
                 isCorrect = True
 
-        self.steps = 0
-        self.previous_action = -1 # Do nothing
+        self.steps = 0 
 
         obs = self._get_observation()
+        self._start_episode(obs)
         info = {}
 
         return obs, info
-    
+
     def step(self, action: int):
         self.steps += 1
-    
-        previous_dist2goal = self._dist_to_goal()
+
         moved = self.robot.move(self.map, action)
-        truncated = not moved
 
         obs = self._get_observation()
-        info = {}
-        
-        dist2goal = obs[-1][0]
-        
-        mean_dists = np.mean(obs[:-1,0])
-
-        reward = -0.2 if self.previous_action > 0 and action > 0 else -0.01
-        reward -= dist2goal/self._map_diagonal
-        reward -= mean_dists/self._map_diagonal
-        reward += (previous_dist2goal - dist2goal)/self._map_diagonal * 5
-
-        terminated = False
-        if dist2goal < 1:
-            terminated = True
-            reward += 100.0  # Big success reward
-
-        # Replace your reward calculation with:
-        truncated = truncated or bool(self.steps >= self.max_steps)
-        if truncated:
-            reward = -10.0
-        
-        self.previous_action = action
-        
+        reward, terminated, truncated, info = self._finish_step(action, obs, hit_obstacle=not moved)
         return obs, reward, terminated, truncated, info
     
     def render(self):
         if self.render_mode != 'human': return
         if not hasattr(self, "renderer"): self.renderer = PygameRenderer(self.map, cell_size=self.cell_size)
-        dists = self._get_observation()
+        dists = self._previous_obs.reshape((-1, 2)) # type: ignore
         self.renderer.handle_events()
         self.renderer.render(self.robot, self.lidar,dists[:-1,:], self.goal_pos)
 
-class Grid_Robot_Sections_Env(gym.Env):
+class Grid_Robot_Sections_Env(RewardedStepMixin, gym.Env):
     """
     Docstring for Robot_Grid_Env
     
@@ -188,11 +241,12 @@ class Grid_Robot_Sections_Env(gym.Env):
     _max_range = 100
     _min_separation_distance = 10
     _max_previous_actions = 5
-    _previous_actions: np.ndarray = np.array([])
+    
     
     def __init__(self, *,
                 map: GridMap,
-                robot: GridRobotNotTurning,
+                robot: Robot,
+                reward_fn: RewardCallable,
                 lidar_config: Optional[Dict] = None,
                 max_iteration_steps: Union[int,np.integer] = 10_000,
                 render_mode: Optional[str] = None,
@@ -200,7 +254,8 @@ class Grid_Robot_Sections_Env(gym.Env):
                 num_sections: int = _min_num_sections
                 ) -> None:
         if not isinstance(map, GridMap): raise TypeError("The map must be of type GridMap")
-        if not isinstance(robot, GridRobotNotTurning): raise TypeError("The robot must be of type GridRobotNotTurning")
+        if not isinstance(robot, Robot): raise TypeError("The robot must be of type Robot")
+        self._check_reward_fn(reward_fn)
         if num_sections < self._min_num_sections and num_sections%4 != 0: raise ValueError(f"The number of sections must be greater or equal to {self._min_num_sections} and a multiple of 4")
 
         if lidar_config: 
@@ -212,6 +267,7 @@ class Grid_Robot_Sections_Env(gym.Env):
         super().__init__()
         self.map = map
         self.robot = robot
+        self.reward_fn = reward_fn
         if not lidar_config:
             self.lidar = GridLidar(num_rays=self._min_num_rays, max_range=self._max_range, noise_std=self._max_noise_std, with_cache=True)
         else:
@@ -222,7 +278,7 @@ class Grid_Robot_Sections_Env(gym.Env):
         max_map_distance = np.sqrt(np.sum(np.array(self.map.grid.shape) **2))
         self._map_diagonal = max_map_distance
 
-        self.action_space = spaces.Discrete(4,start=0,dtype=np.int8) # One for move foward and bakward and another one for changing orientation
+        self.action_space = spaces.Discrete(robot.NUM_ACTIONS,start=0,dtype=np.int8) # One for move foward and bakward and another one for changing orientation
         self.observation_space = spaces.Box( low=np.array([[-1, -np.pi]] * num_sections + [[0.0, -np.pi]],dtype=np.float32),
                         high=np.array([[self._max_range, np.pi]] * num_sections + [[max_map_distance, np.pi]], dtype=np.float32))
 
@@ -232,6 +288,9 @@ class Grid_Robot_Sections_Env(gym.Env):
 
         self._angle_per_section = self.lidar.fov_rad/num_sections;
         self._start_angle = -self._angle_per_section/2;
+        self._previous_actions: np.ndarray = np.array([])
+        self._previous_action = -1 # Do nothing
+        self._previous_obs = None
     
     def get_observation_shape(self):
         return self.observation_space.shape
@@ -311,90 +370,32 @@ class Grid_Robot_Sections_Env(gym.Env):
                 isCorrect = True
 
         self.steps = 0
-        self.previous_action = -1 # Do nothing
 
         obs = self._get_observation()
+        self._start_episode(obs)
         info = {}
         self._previous_actions = np.array([]) # Empty it
 
         return obs, info
     
-    _safety_margin = 3.0       # lidar distance below which we start penalizing proximity
-    _max_proximity_penalty = 1.0
-    # _stagnation_window = 8     # how many recent actions to check for spinning
-
     def step(self, action: int):
         self.steps += 1
 
-        previous_dist2goal = self._dist_to_goal()
         moved = self.robot.move(self.map, action)
-        hit_obstacle = not moved
-
 
         obs_flat = self._get_observation()
-        obs = obs_flat.reshape((-1, 2))
-        
-
-        dist2goal = obs[-1][0]
-        min_dist = np.min(obs[:-1, 0][obs[:-1, 0] >= 0]) if np.any(obs[:-1, 0] >= 0) else self._max_range
-
-        info = {'max_steps_reached': self.steps >= self.max_steps, 'hit_obstacle': hit_obstacle, 'min_dist': min_dist, 'dist2goal': dist2goal,'steps': self.steps, 'goal_pos': self.goal_pos, 'robot_pos': self.robot.position}
-
-        # 1. Progress toward goal — the dominant signal, bounded per-step
-        progress = 10.0 * (previous_dist2goal - dist2goal) / self._map_diagonal
-        reward = progress * 1.0
-        info['reward_components'] = {'progress': progress, 'step_cost': -0.05, 'proximity_penalty': 0.0, 'terminal_reward': 0.0}
-
-        # 2. Small constant step cost so idling/short paths are preferred over long ones
-        reward -= 0.05
-
-        # 3. Bounded obstacle-proximity penalty — no division, no blow-up
-        closeness = 0.0
-        if min_dist < self._safety_margin: # TODO - Try different safety_margins
-            closeness = (self._safety_margin - min_dist) / self._safety_margin  # in [0, 1]
-            proximity_penalty = self._max_proximity_penalty * closeness
-            reward -= proximity_penalty
-            info['reward_components']['proximity_penalty'] = -proximity_penalty
-
-
-        # 5. Terminal reward/penalty — clearly bigger than any step reward, but not extreme
-        done = False
-        if dist2goal < 1:
-            done = True
-            reward += 20.0
-            info['reward_components']['terminal_reward'] = 20.0
-        
-        if not done and hit_obstacle:
-            reward -= 5.0
-            info['reward_components']['terminal_reward'] = -5.0
-            
-        truncated = hit_obstacle or bool(self.steps >= self.max_steps)
-        
-        componente_max = abs(info['reward_components']['progress'])
-        componente_min = abs(info['reward_components']['progress'])
-        for component in info['reward_components']:
-            if abs(info['reward_components'][component]) > componente_max:
-                componente_max = abs(info['reward_components'][component])
-            if abs(info['reward_components'][component]) < componente_min:
-                componente_min = abs(info['reward_components'][component])
-        
-        info['componente_reward_min'] = componente_min
-        info['componente_reward_max'] = componente_max
-        info['componente_reward_diff'] = componente_max - componente_min
-
-
-        return obs_flat, reward, done, truncated, info
+        reward, terminated, truncated, info = self._finish_step(action, obs_flat, hit_obstacle=not moved)
+        return obs_flat, reward, terminated, truncated, info
     
     def render(self):
         if self.render_mode != 'human': return
         if not hasattr(self, "renderer"): self.renderer = PygameRenderer(self.map, cell_size=self.cell_size)
-        dists = self._get_observation()
-        dists = dists.reshape((-1, 2))
+        dists = self._previous_obs.reshape((-1, 2)) # type: ignore
         self.renderer.handle_events()
         self.renderer.render(self.robot,dists[:-1,:],self.num_sections, self.goal_pos)
 
 
-class Grid_Robot_Sections_Env_MultiMap(gym.Env):
+class Grid_Robot_Sections_Env_MultiMap(RewardedStepMixin, gym.Env):
     """
     Docstring for Robot_Grid_Env
     
@@ -406,21 +407,26 @@ class Grid_Robot_Sections_Env_MultiMap(gym.Env):
     _max_range = 100
     _min_separation_distance = 10
     _max_previous_actions = 5
-    _previous_actions: np.ndarray = np.array([])
+    
     
     def __init__(self, *,
-                maps: List[GridMap],
-                robot: GridRobotNotTurning,
+                maps: Iterable[GridMap],
+                robot: Robot,
+                reward_fn: RewardCallable,
                 lidar_config: Optional[Dict] = None,
                 max_iteration_steps: Union[int,np.integer] = 10_000,
                 render_mode: Optional[str] = None,
                 cell_size: int = 32,
-                num_sections: int = _min_num_sections
+                num_sections: int = _min_num_sections,
+                random_map: bool = True
                 ) -> None:
-        if not isinstance(maps, Iterable): raise TypeError("The map must be of type Iterable")
-        if len(maps) == 0: raise ValueError("A map must be provided")
-        if any(not isinstance(map, GridMap) for map in maps): raise TypeError("Each map must be of type GridMap")
-        if not isinstance(robot, GridRobotNotTurning): raise TypeError("The robot must be of type GridRobotNotTurning")
+        if not isinstance(maps, Iterable): raise TypeError("The maps must be an iterable of GridMap instances")
+        maps = list(maps)
+        if not maps: raise ValueError("The maps iterable cannot be empty")
+        if not all(isinstance(m, GridMap) for m in maps): raise TypeError("All elements in the maps iterable must be of type GridMap")
+        
+        if not isinstance(robot, Robot): raise TypeError("The robot must be of type Robot")
+        self._check_reward_fn(reward_fn)
         if num_sections < self._min_num_sections and num_sections%4 != 0: raise ValueError(f"The number of sections must be greater or equal to {self._min_num_sections} and a multiple of 4")
 
         if lidar_config: 
@@ -431,8 +437,11 @@ class Grid_Robot_Sections_Env_MultiMap(gym.Env):
         
         super().__init__()
         self.maps = maps
+        self._random_map = random_map
+        self._map_idx: Optional[int] = None # Set on reset; the first map is a placeholder until then
         self.map = self.maps[0]
         self.robot = robot
+        self.reward_fn = reward_fn
         if not lidar_config:
             self.lidar = GridLidar(num_rays=self._min_num_rays, max_range=self._max_range, noise_std=self._max_noise_std, with_cache=True)
         else:
@@ -440,10 +449,11 @@ class Grid_Robot_Sections_Env_MultiMap(gym.Env):
         self.max_steps = max_iteration_steps
         self.render_mode = render_mode
         
-        max_map_distance = max(np.sqrt(np.sum(np.array(map.grid.shape) **2)) for map in self.maps)
+        # Largest diagonal over all maps, so the observation bounds and reward normalisation hold for every map
+        max_map_distance = max(np.sqrt(np.sum(np.array(m.grid.shape) **2)) for m in self.maps)
         self._map_diagonal = max_map_distance
 
-        self.action_space = spaces.Discrete(4,start=0,dtype=np.int8) # One for move foward and bakward and another one for changing orientation
+        self.action_space = spaces.Discrete(robot.NUM_ACTIONS,start=0,dtype=np.int8) # One for move foward and bakward and another one for changing orientation
         self.observation_space = spaces.Box( low=np.array([[-1, -np.pi]] * num_sections + [[0.0, -np.pi]],dtype=np.float32),
                         high=np.array([[self._max_range, np.pi]] * num_sections + [[max_map_distance, np.pi]], dtype=np.float32))
 
@@ -453,7 +463,21 @@ class Grid_Robot_Sections_Env_MultiMap(gym.Env):
 
         self._angle_per_section = self.lidar.fov_rad/num_sections;
         self._start_angle = -self._angle_per_section/2;
-    
+        self._previous_actions: np.ndarray = np.array([])
+        self._previous_action = -1 # Do nothing
+        self._previous_obs = None
+
+    def _get_random_map(self)->GridMap:
+        """
+        Select the map for the next episode: uniformly at random (seeded through reset(seed=...)),
+        or cycling through the maps in order when random_map is False.
+        """
+        if self._random_map:
+            self._map_idx = int(self.np_random.integers(len(self.maps)))
+        else:
+            self._map_idx = 0 if self._map_idx is None else (self._map_idx + 1) % len(self.maps)
+        return self.maps[self._map_idx]
+
     def get_observation_shape(self):
         return self.observation_space.shape
     
@@ -512,8 +536,7 @@ class Grid_Robot_Sections_Env_MultiMap(gym.Env):
     
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
-        self.renderer = None
-        self.map = self.maps[np.random.randint(0,len(self.maps))]
+        self.map = self._get_random_map()
 
         height, width = self.map.grid.shape
         isCorrect = False
@@ -534,267 +557,208 @@ class Grid_Robot_Sections_Env_MultiMap(gym.Env):
                 isCorrect = True
 
         self.steps = 0
-        self.previous_action = -1 # Do nothing
 
         obs = self._get_observation()
+        self._start_episode(obs)
         info = {}
         self._previous_actions = np.array([]) # Empty it
 
         return obs, info
     
-    _safety_margin = 3.0       # lidar distance below which we start penalizing proximity
-    _max_proximity_penalty = 1.0
-    _step_penalty = 0.05
-    # _stagnation_window = 8     # how many recent actions to check for spinning
-
     def step(self, action: int):
         self.steps += 1
 
-        previous_dist2goal = self._dist_to_goal()
         moved = self.robot.move(self.map, action)
-        hit_obstacle = not moved
-
 
         obs_flat = self._get_observation()
-        obs = obs_flat.reshape((-1, 2))
-        
-
-        dist2goal = obs[-1][0]
-        min_dist = np.min(obs[:-1, 0][obs[:-1, 0] >= 0]) if np.any(obs[:-1, 0] >= 0) else self._max_range
-
-        info = {'max_steps_reached': self.steps >= self.max_steps, 'hit_obstacle': hit_obstacle, 'min_dist': min_dist, 'dist2goal': dist2goal,'steps': self.steps, 'goal_pos': self.goal_pos, 'robot_pos': self.robot.position}
-
-        # 1. Progress toward goal — the dominant signal, bounded per-step
-        progress = np.clip( 10.0 * (previous_dist2goal - dist2goal) / self._map_diagonal, 0.0, None)
-        reward = progress * 1.0
-        info['reward_components'] = {'progress': progress, 'step_cost': -self._step_penalty, 'proximity_penalty': 0.0, 'terminal_reward': 0.0}
-
-        # 2. Small constant step cost so idling/short paths are preferred over long ones
-        reward -= self._step_penalty
-
-        # 3. Bounded obstacle-proximity penalty — no division, no blow-up
-        closeness = 0.0
-        if min_dist < self._safety_margin: # TODO - Try different safety_margins
-            closeness = (self._safety_margin - min_dist) / self._safety_margin  # in [0, 1]
-            proximity_penalty = self._max_proximity_penalty * closeness
-            reward -= proximity_penalty
-            info['reward_components']['proximity_penalty'] = -proximity_penalty
-
-
-        # 5. Terminal reward/penalty — clearly bigger than any step reward, but not extreme
-        done = False
-        if dist2goal < 1:
-            done = True
-            reward += 20.0
-            info['reward_components']['terminal_reward'] = 20.0
-        
-        if not done and hit_obstacle:
-            reward -= 5.0
-            info['reward_components']['terminal_reward'] = -5.0
-            
-        truncated = hit_obstacle or bool(self.steps >= self.max_steps)
-        
-        componente_max = abs(info['reward_components']['progress'])
-        componente_min = abs(info['reward_components']['progress'])
-        for component in info['reward_components']:
-            if abs(info['reward_components'][component]) > componente_max:
-                componente_max = abs(info['reward_components'][component])
-            if abs(info['reward_components'][component]) < componente_min:
-                componente_min = abs(info['reward_components'][component])
-        
-        info['componente_reward_min'] = componente_min
-        info['componente_reward_max'] = componente_max
-        info['componente_reward_diff'] = componente_max - componente_min
-
-
-        return obs_flat, reward, done, truncated, info
+        reward, terminated, truncated, info = self._finish_step(action, obs_flat, hit_obstacle=not moved)
+        return obs_flat, reward, terminated, truncated, info
     
     def render(self):
         if self.render_mode != 'human': return
-        if not hasattr(self, "renderer") or not getattr(self, "renderer",None): self.renderer = PygameRenderer(self.map, cell_size=self.cell_size)
-        dists = self._get_observation()
-        dists = dists.reshape((-1, 2))
+        if not hasattr(self, "renderer"): self.renderer = PygameRenderer(self.map, cell_size=self.cell_size)
+        dists = self._previous_obs.reshape((-1, 2)) # type: ignore
         self.renderer.handle_events()
         self.renderer.render(self.robot,dists[:-1,:],self.num_sections, self.goal_pos)
 
-class Grid_Robot_Env_Image_lidar(gym.Env):
-    """
-    Docstring for Robot_Grid_Env
+# class Grid_Robot_Env_Image_lidar(gym.Env):
+#     """
+#     Docstring for Robot_Grid_Env
     
-    """
-    metadata = {"render_modes": ["human"], "render_fps": 10}
-    _min_num_rays = 50
-    _max_noise_std = 0.5
-    _max_range = 100
-    _min_separation_distance = 5
-    _previous_actions: list = []
-    _max_previous_actions = 5
+#     """
+#     metadata = {"render_modes": ["human"], "render_fps": 10}
+#     _min_num_rays = 50
+#     _max_noise_std = 0.5
+#     _max_range = 100
+#     _min_separation_distance = 5
+#     _previous_actions: list = []
+#     _max_previous_actions = 5
     
-    def __init__(self, *,
-                map: GridMap,
-                robot: GridRobot,
-                lidar_config: Optional[Dict] = None,
-                max_iteration_steps: Union[int,np.integer] = 10_000,
-                render_mode: Optional[str] = None,
-                cell_size: int = 32
-                ) -> None:
-        if not isinstance(map, GridMap): raise TypeError("The map must be of type GridMap")
-        if not isinstance(robot, GridRobot): raise TypeError("The robot must be of type GridRobot")
-        if lidar_config: 
-            if any(key not in GridLidar.config_keys() for key in lidar_config.keys()): raise ValueError(f"One of the configuration keys for the lidar is not correct. The configuration keys are: {', '.join(GridLidar.config_keys())}")
-            elif lidar_config['num_rays'] < self._min_num_rays: raise ValueError(f"The field 'num_rays' (number of rays) must be greater or equal to {self._min_num_rays}")
-            elif lidar_config['max_range'] > self._max_range: raise ValueError(f"The field 'max_range' (maximum detection distance) must be less or equal to {self._max_range}")
-            elif lidar_config['noise_std'] > self._max_noise_std: raise ValueError(f"The field 'noise_std' (maximum noise standard deviation) must be less or equal to {self._max_noise_std}")
+#     def __init__(self, *,
+#                 map: GridMap,
+#                 robot: GridRobot,
+#                 lidar_config: Optional[Dict] = None,
+#                 max_iteration_steps: Union[int,np.integer] = 10_000,
+#                 render_mode: Optional[str] = None,
+#                 cell_size: int = 32
+#                 ) -> None:
+#         if not isinstance(map, GridMap): raise TypeError("The map must be of type GridMap")
+#         if not isinstance(robot, GridRobot): raise TypeError("The robot must be of type GridRobot")
+#         if lidar_config: 
+#             if any(key not in GridLidar.config_keys() for key in lidar_config.keys()): raise ValueError(f"One of the configuration keys for the lidar is not correct. The configuration keys are: {', '.join(GridLidar.config_keys())}")
+#             elif lidar_config['num_rays'] < self._min_num_rays: raise ValueError(f"The field 'num_rays' (number of rays) must be greater or equal to {self._min_num_rays}")
+#             elif lidar_config['max_range'] > self._max_range: raise ValueError(f"The field 'max_range' (maximum detection distance) must be less or equal to {self._max_range}")
+#             elif lidar_config['noise_std'] > self._max_noise_std: raise ValueError(f"The field 'noise_std' (maximum noise standard deviation) must be less or equal to {self._max_noise_std}")
 
-        super().__init__()
-        self.map = map
-        self.robot = robot
-        if not lidar_config:
-            self.lidar = GridLidar_2D()
-        else:
-            self.lidar = GridLidar_2D(**lidar_config)
-        self.max_steps = max_iteration_steps
-        self.render_mode = render_mode
+#         super().__init__()
+#         self.map = map
+#         self.robot = robot
+#         if not lidar_config:
+#             self.lidar = GridLidar_2D()
+#         else:
+#             self.lidar = GridLidar_2D(**lidar_config)
+#         self.max_steps = max_iteration_steps
+#         self.render_mode = render_mode
         
-        max_map_distance = np.sqrt(np.sum(np.array(self.map.grid.shape) **2))
-        self._map_diagonal = max_map_distance
+#         max_map_distance = np.sqrt(np.sum(np.array(self.map.grid.shape) **2))
+#         self._map_diagonal = max_map_distance
 
-        self.action_space = spaces.Discrete(3,dtype=np.int8) # One for move foward and bakward and another one for changing orientation
-        grid_size = 2 * self.lidar.max_range + 1;
-        self.observation_space = spaces.Dict({
-            "lidar": spaces.Box(low=0, high=self.lidar.max_range,
-                                 shape=(grid_size, grid_size), dtype=np.int8),
-            "robot": spaces.Box(low=np.array([0.0, -np.pi]), 
-                    high=np.array([max_map_distance, np.pi]), dtype=np.float32)
-        })
-        self.observation_space = spaces.Box( low=np.array([[-1, -np.pi]] * self._min_num_rays + [[0.0, -np.pi]]), high=np.array([[self._max_range, np.pi]] * self._min_num_rays + [[max_map_distance, np.pi]]))
+#         self.action_space = spaces.Discrete(3,dtype=np.int8) # One for move foward and bakward and another one for changing orientation
+#         grid_size = 2 * self.lidar.max_range + 1;
+#         self.observation_space = spaces.Dict({
+#             "lidar": spaces.Box(low=0, high=self.lidar.max_range,
+#                                  shape=(grid_size, grid_size), dtype=np.int8),
+#             "robot": spaces.Box(low=np.array([0.0, -np.pi]), 
+#                     high=np.array([max_map_distance, np.pi]), dtype=np.float32)
+#         })
+#         self.observation_space = spaces.Box( low=np.array([[-1, -np.pi]] * self._min_num_rays + [[0.0, -np.pi]]), high=np.array([[self._max_range, np.pi]] * self._min_num_rays + [[max_map_distance, np.pi]]))
 
-        self.steps = 0
-        self.cell_size = cell_size
+#         self.steps = 0
+#         self.cell_size = cell_size
     
-    def get_observation_shape(self):
-        return self.observation_space.shape
+#     def get_observation_shape(self):
+#         return self.observation_space.shape
     
-    def get_observation_dim(self):
-        return np.prod(self.observation_space.shape) # type: ignore
+#     def get_observation_dim(self):
+#         return np.prod(self.observation_space.shape) # type: ignore
     
-    def get_action_dim(self):
-        return self.action_space.n # type: ignore
+#     def get_action_dim(self):
+#         return self.action_space.n # type: ignore
     
-    def get_action_shape(self):
-        return self.action_space.shape
+#     def get_action_shape(self):
+#         return self.action_space.shape
 
-    def _get_observation(self):
-        scanning = self.lidar.scan(self.map, self.robot.position, self.robot.ORIENTATIONS[self.robot.orientation]['angle'])
+#     def _get_observation(self):
+#         scanning = self.lidar.scan(self.map, self.robot.position, self.robot.ORIENTATIONS[self.robot.orientation]['angle'])
         
-        robot_obs = np.array([self._dist_to_goal(),self._angle_to_goal()])
+#         robot_obs = np.array([self._dist_to_goal(),self._angle_to_goal()])
         
-        return {"lidar": scanning, "robot": robot_obs}
+#         return {"lidar": scanning, "robot": robot_obs}
 
-    def _dist_to_goal(self):
-        return np.sqrt(np.sum((self.goal_pos - self.robot.position)**2))    
+#     def _dist_to_goal(self):
+#         return np.sqrt(np.sum((self.goal_pos - self.robot.position)**2))    
     
-    def _angle_to_goal(self):
-        x_diff, y_diff = self.goal_pos - self.robot.position
-        return np.atan2(y_diff, x_diff)
+#     def _angle_to_goal(self):
+#         x_diff, y_diff = self.goal_pos - self.robot.position
+#         return np.atan2(y_diff, x_diff)
     
-    def reset(self, *, seed=None, options=None):
-        super().reset(seed=seed)
+#     def reset(self, *, seed=None, options=None):
+#         super().reset(seed=seed)
 
-        height, width = self.map.grid.shape
-        isCorrect = False
-        while not isCorrect:
-            r = np.random.randint(0,height)
-            c = np.random.randint(0,width)
-            orien = self.robot.ORIENTATIONS_LIST[np.random.randint(0,4)]
-            if self.map.is_free(r, c):
-                self.robot.reset((c,r),orien)
-                isCorrect = True
+#         height, width = self.map.grid.shape
+#         isCorrect = False
+#         while not isCorrect:
+#             r = np.random.randint(0,height)
+#             c = np.random.randint(0,width)
+#             orien = self.robot.ORIENTATIONS_LIST[np.random.randint(0,4)]
+#             if self.map.is_free(r, c):
+#                 self.robot.reset((c,r),orien)
+#                 isCorrect = True
         
-        isCorrect = False
-        while not isCorrect:
-            r = np.random.randint(0,height)
-            c = np.random.randint(0,width)
-            self.goal_pos = np.array([c,r])
-            dist_to_robot = self._dist_to_goal()
-            if self.map.is_free(r, c) and dist_to_robot > self._min_separation_distance:
-                isCorrect = True
+#         isCorrect = False
+#         while not isCorrect:
+#             r = np.random.randint(0,height)
+#             c = np.random.randint(0,width)
+#             self.goal_pos = np.array([c,r])
+#             dist_to_robot = self._dist_to_goal()
+#             if self.map.is_free(r, c) and dist_to_robot > self._min_separation_distance:
+#                 isCorrect = True
 
-        self.steps = 0
-        self.previous_action = -1 # Do nothing
-        self._previous_actions.clear() # Empty it
+#         self.steps = 0
+#         self._previous_action = -1 # Do nothing
+#         self._previous_actions.clear() # Empty it
 
-        obs = self._get_observation()
-        info = {}
+#         obs = self._get_observation()
+#         info = {}
 
-        return obs, info
+#         return obs, info
     
-    def step(self, action: int):
-        self.steps += 1
+#     def step(self, action: int):
+#         self.steps += 1
     
-        previous_dist2goal = self._dist_to_goal()
-        truncated = False
-        if action == 0: # Move foward
-            moved = self.robot.forward(self.map)
-            truncated = not moved
-        elif action == 1: # Rotate left
-            self.robot.turn_left()
-        else:# elif action == 3: # Rotate right
-            self.robot.turn_right()            
-        if len(self._previous_actions) >= self._max_previous_actions: # Keep only the last 5 actions
-            self._previous_actions.pop(0)
-        self._previous_actions.append(action)
+#         previous_dist2goal = self._dist_to_goal()
+#         truncated = False
+#         if action == 0: # Move foward
+#             moved = self.robot.forward(self.map)
+#             truncated = not moved
+#         elif action == 1: # Rotate left
+#             self.robot.turn_left()
+#         else:# elif action == 3: # Rotate right
+#             self.robot.turn_right()            
+#         if len(self._previous_actions) >= self._max_previous_actions: # Keep only the last 5 actions
+#             self._previous_actions.pop(0)
+#         self._previous_actions.append(action)
 
-        obs = self._get_observation()
-        scanning = obs["lidar"]
-        robot_obs = obs["robot"]
-        info = {}
+#         obs = self._get_observation()
+#         scanning = obs["lidar"]
+#         robot_obs = obs["robot"]
+#         info = {}
         
-        dist2goal = robot_obs[0]
-        # Distances to LIDAR
-        centerLidar = self.lidar.max_range;
-        obstacle_coords = np.argwhere(scanning == 1)
-        if obstacle_coords.size > 0:
-            # Eucledian Distance from the center to each detected obstacle
-            dists_to_obstacles = np.linalg.norm(obstacle_coords - [centerLidar, centerLidar], axis=1)
-            dists_to_obstacles = np.clip(dists_to_obstacles, 0, self.lidar.max_range) # Clip to max range
-            dists_to_obstacles = np.power(dists_to_obstacles, 2) # Square the distances to emphasize closer obstacles
+#         dist2goal = robot_obs[0]
+#         # Distances to LIDAR
+#         centerLidar = self.lidar.max_range;
+#         obstacle_coords = np.argwhere(scanning == 1)
+#         if obstacle_coords.size > 0:
+#             # Eucledian Distance from the center to each detected obstacle
+#             dists_to_obstacles = np.linalg.norm(obstacle_coords - [centerLidar, centerLidar], axis=1)
+#             dists_to_obstacles = np.clip(dists_to_obstacles, 0, self.lidar.max_range) # Clip to max range
+#             dists_to_obstacles = np.power(dists_to_obstacles, 2) # Square the distances to emphasize closer obstacles
             
-            min_obstacle_dist = np.min(dists_to_obstacles)
-            mean_dists = np.mean(dists_to_obstacles)
-        else:
-            # If there are no obstacles in view, we assume the maximum safe distance
-            min_obstacle_dist = -float(self.lidar.max_range)
-            mean_dists = min_obstacle_dist
+#             min_obstacle_dist = np.min(dists_to_obstacles)
+#             mean_dists = np.mean(dists_to_obstacles)
+#         else:
+#             # If there are no obstacles in view, we assume the maximum safe distance
+#             min_obstacle_dist = -float(self.lidar.max_range)
+#             mean_dists = min_obstacle_dist
 
-        reward = -0.5 if all(action!=0 for action in self._previous_actions) else -0.01
-        reward -= (5*dist2goal)/self._map_diagonal
-        reward -= mean_dists/self._map_diagonal
-        reward -= mean_dists/self._map_diagonal
-        reward += ((previous_dist2goal - dist2goal)/self._map_diagonal) * 5
+#         reward = -0.5 if all(action!=0 for action in self._previous_actions) else -0.01
+#         reward -= (5*dist2goal)/self._map_diagonal
+#         reward -= mean_dists/self._map_diagonal
+#         reward -= mean_dists/self._map_diagonal
+#         reward += ((previous_dist2goal - dist2goal)/self._map_diagonal) * 5
 
-        terminated = False
-        if dist2goal < 1:
-            terminated = True
-            reward = 100.0  # Big success reward
+#         terminated = False
+#         if dist2goal < 1:
+#             terminated = True
+#             reward = 100.0  # Big success reward
 
-        # Replace your reward calculation with:
-        truncated = not terminated and (truncated or bool(self.steps >= self.max_steps))
-        if truncated:
-            reward -= 10.0
+#         # Replace your reward calculation with:
+#         truncated = not terminated and (truncated or bool(self.steps >= self.max_steps))
+#         if truncated:
+#             reward -= 10.0
         
         
-        return (scanning, robot_obs), reward, terminated, truncated, info
+#         return (scanning, robot_obs), reward, terminated, truncated, info
     
-    def render(self):
-        if self.render_mode != 'human': 
-            return
+#     def render(self):
+#         if self.render_mode != 'human': 
+#             return
             
-        if not hasattr(self, "renderer"): 
-            self.renderer = PygameRenderer(self.map, cell_size=self.cell_size)
+#         if not hasattr(self, "renderer"): 
+#             self.renderer = PygameRenderer(self.map, cell_size=self.cell_size)
             
-        obs = self._get_observation()
-        lidar_image = obs["lidar"] 
+#         obs = self._get_observation()
+#         lidar_image = obs["lidar"] 
         
-        self.renderer.handle_events()
-        self.renderer.render(self.robot, self.lidar, lidar_image, self.goal_pos)
+#         self.renderer.handle_events()
+#         self.renderer.render(self.robot, self.lidar, lidar_image, self.goal_pos)

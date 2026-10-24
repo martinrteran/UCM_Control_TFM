@@ -75,10 +75,10 @@ class GridMap:
 
         if grid_obstacles:
             for grid_obstacle in grid_obstacles:
-                if not self.is_obstacle_in_bounds(grid_obstacle): 
+                if not self._is_obstacle_in_bounds(grid_obstacle): 
                     raise IndexError(f"The grid_obstacle {grid_obstacle} is out of bounds")
-                self.set_obstacle(grid_obstacle)
-            self._obstacles = grid_obstacles
+                self._set_obstacle(grid_obstacle)
+            self._obstacles = list(grid_obstacles)
         else:
             self._obstacles = []
         
@@ -87,10 +87,11 @@ class GridMap:
     def get_width(self): return self._width
     def get_height(self): return self._height
 
-    def is_obstacle_in_bounds(self, obstacle:GridObstacle):
-        corners = obstacle.get_corners()
-        in_bounds = all(self.in_bounds(r,c) for c, r in corners)
-        return in_bounds
+    def _is_obstacle_in_bounds(self, obstacle:GridObstacle):
+        # The obstacle covers [x, x+width) x [y, y+height): its far edge may touch the map border
+        x, y = obstacle.get_corner()
+        width, height = obstacle.get_size()
+        return x >= 0 and y >= 0 and x + width <= self._width and y + height <= self._height
 
     def in_bounds(self, row: int, col: int) -> bool:
         return 0 <= row < self._height and 0 <= col < self._width
@@ -101,21 +102,42 @@ class GridMap:
     def is_obstacle(self, row: int, col: int) -> bool:
         return self.in_bounds(row, col) and bool(self.grid[row, col] == self.OBSTACLE)
 
-    def set_obstacle(self, obstacle: GridObstacle):
+    def _set_obstacle(self, obstacle: GridObstacle):
         x,y = obstacle.get_corner()
         width, height = obstacle.get_size()
-        self.grid[y:y+height, x:x+width] += self.OBSTACLE
+        self.grid[y:y+height, x:x+width] = self.OBSTACLE
+
+    def extend_obstacles(self, obstacles: Iterable[GridObstacle]):
+        for obstacle in obstacles:
+            self.append_obstacle(obstacle)
+
+    def append_obstacle(self, obstacle: GridObstacle):
+        if not self._is_obstacle_in_bounds(obstacle): 
+            raise IndexError(f"The grid_obstacle {obstacle} is out of bounds")
+
+        x,y = obstacle.get_corner()
+        width, height = obstacle.get_size()
+        if any(self.is_obstacle(r, c) for r in range(y, y +height) for c in range(x, x + width)):
+            raise ValueError(f"The grid_obstacle {obstacle} collides with existing obstacles")
+
+        self._obstacles.append(obstacle)
+        self._set_obstacle(obstacle)
     
     def pop_obstacle(self, index: int):
         if index >= len(self._obstacles): return
-        return self._obstacles.pop(index)
+        obs = self._obstacles[index]
+        self.clear_obstacle(obs)
+        return obs
 
     def clear_obstacle(self, obstacle: GridObstacle):
         if obstacle in self._obstacles:
             x,y = obstacle.get_corner()
             width, height = obstacle.get_size()
-            self.grid[y:y+height, x:x+width] -= self.OBSTACLE
+            self.grid[y:y+height, x:x+width] = self.FREE
             self._obstacles.remove(obstacle)
+            # Restore cells shared with obstacles that overlapped the removed one
+            for remaining in self._obstacles:
+                self._set_obstacle(remaining)
     
     def to_numpy(self) -> np.ndarray:
         return self.grid.detach().clone().cpu().numpy()
@@ -125,7 +147,7 @@ class GridMap:
 
     def __str__(self) -> str:
         symbols = {self.FREE: ".", self.OBSTACLE: "#"}
-        return "\n".join("".join(symbols[cell] for cell in row) for row in self.grid) # type: ignore
+        return "\n".join("".join(symbols[int(cell)] for cell in row) for row in self.grid) # type: ignore
 
     # ------------------------------------------------------------
     # Saving and loading maps

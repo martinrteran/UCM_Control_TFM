@@ -21,7 +21,7 @@ import torch.nn as nn
 import torch.optim as optim
 from abc import ABC, abstractmethod
 from .utils import RLConfig,ReplayBuffer
-from typing import Dict, Any, Optional, SupportsFloat, Tuple, List, Union
+from typing import Dict, Any, Iterable, Optional, SupportsFloat, Tuple, List, Union
 
 
 def compute_gae(rewards, values, dones, gamma, lam):
@@ -134,7 +134,7 @@ class BaseRLAgent(ABC):
         self.optimizer = optim.Adam(params, lr=self.config.lr)
     
     @abstractmethod
-    def select_action(self, state: np.ndarray, training: bool = True) -> Union[int, np.ndarray]:
+    def select_action(self, state: np.ndarray, training: bool = True) -> Union[int, np.ndarray, Iterable]:
         """
         Select action based on current policy.
         

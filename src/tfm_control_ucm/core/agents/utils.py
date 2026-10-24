@@ -67,23 +67,23 @@ class RLConfig:
             cfg_dict["device"] = str(cfg_dict["device"])
         return cfg_dict
 
-@dataclass
-class BaseRLConfig:
-    name: str
-    obs_dim: int
-    action_dim: int
-    algorithm: RLAlgorithm
-    device: Union[str, torch.device] = "cpu"
-    gamma: float = 0.99
-    lr: float = 1e-3
-    max_grad_norm: float = 10.0
-    batch_size: int = 64
-    buffer_size: int = 100_000
+# @dataclass
+# class BaseRLConfig:
+#     name: str
+#     obs_dim: int
+#     action_dim: int
+#     algorithm: RLAlgorithm
+#     device: Union[str, torch.device] = "cpu"
+#     gamma: float = 0.99
+#     lr: float = 1e-3
+#     max_grad_norm: float = 10.0
+#     batch_size: int = 64
+#     buffer_size: int = 100_000
     
 
-    def __post_init__(self):
-        if isinstance(self.device, str):
-            self.device = torch.device(self.device)
+#     def __post_init__(self):
+#         if isinstance(self.device, str):
+#             self.device = torch.device(self.device)
 
 @dataclass
 class DQNConfig(RLConfig):
@@ -117,7 +117,6 @@ class PPOConfig(RLConfig):
     clip_eps: float = 0.2# PPO clipping epsilon
     entropy_coeff: float = 0.01# Entropy coefficient for exploration in policy gradient methods
     rollout_steps: int = 2048
-    clip_eps: float = 0.2 # PPO clipping epsilon
     value_coeff: float = 0.5 # 
 
 @dataclass
@@ -251,12 +250,12 @@ class GridReplayBuffer:
     def capacity(self): return self.buffer.maxlen
 
 class RecurrentPPOBuffer:
-    def __init__(self, obs_dim, seq_len: int, gamma: float, lam: float, device: str = "cuda"):
+    def __init__(self, obs_dim, seq_len: int, gamma: float, lam: float, device: str |torch.device = "cuda"):
         self.obs_dim = obs_dim
         self.seq_len = seq_len
         self.gamma = gamma
         self.lam = lam
-        self.device = torch.device(device)
+        self.device = torch.device(device) if isinstance(device, str) else device
         self.episodes = []  # lista de episodios
 
     def store_episode(self, states, actions, rewards, dones, log_probs, values):

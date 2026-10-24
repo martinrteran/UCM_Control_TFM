@@ -13,13 +13,13 @@ Author: Martin
 """
 
 import os
-from typing import Optional, Tuple
+from typing import Iterable, Optional, Tuple, List
 import numpy as np
 import torch.nn as nn
 import torch
 from torch import optim
 
-from .utils import RLAlgorithm, RecurrentPPOBuffer
+from .utils import PPOConfig, PPORNNConfig, RLAlgorithm, RecurrentPPOBuffer, SACConfig
 
 from .networks import  GridAgentNet, PolicyNetwork, ValueNetwork, SimpleQNetwork
 
@@ -29,163 +29,6 @@ import random
 from torchrl.data import ListStorage, ReplayBuffer, LazyTensorStorage
 from tensordict import TensorDict
 import torch.nn.functional as F
-
-class GridAgent_0:
-    def __init__(
-        self,
-        obs_dim,
-        action_dim,
-        device: str | torch.device = "cpu",
-        gamma=0.99,
-        lr=1e-3,
-        batch_size=64,
-        eps_start=1.0,
-        eps_end=0.05,
-        eps_decay=50_000,
-        target_update=1000,
-        buffer_size=100_000,
-    ):
-        if isinstance(device, str):
-            device = torch.device(device)
-        self.device = device
-        self.gamma = gamma
-        self.batch_size = batch_size
-        self.eps_start = eps_start
-        self.eps_end = eps_end
-        self.eps_decay = eps_decay
-        self.target_update = target_update
-
-        # Networks
-        self.policy_net = GridAgentNet(obs_dim=obs_dim, action_dim=action_dim).to(
-            device
-        )
-        self.target_net = GridAgentNet(obs_dim=obs_dim, action_dim=action_dim).to(
-            device
-        )
-        self.target_net.load_state_dict(self.policy_net.state_dict())
-        self.target_net.eval()
-
-        # Optimizer + loss
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
-        self.criterion = nn.MSELoss()
-
-        # Replay buffer
-        self.buffer = ReplayBuffer(storage=ListStorage(max_size=buffer_size))
-        # self.buffer = GridReplayBuffer()
-
-        # Exploration
-        self.epsilon = eps_start
-        self.global_step = 0
-
-        self.action_dim = action_dim
-
-    # -----------------------------------------------------
-    # Epsilon-greedy action selection
-    # -----------------------------------------------------
-    def select_action(self, state):
-        self.global_step += 1
-
-        # Update epsilon
-        self.epsilon = self.eps_end + (self.eps_start - self.eps_end) * np.exp(
-            -1.0 * self.global_step / self.eps_decay
-        )
-
-        if random.random() < self.epsilon:
-            return random.randrange(self.action_dim)
-
-        state_t = torch.tensor(
-            state, dtype=torch.float32, device=self.device
-        ).unsqueeze(0)
-        with torch.no_grad():
-            q_values = self.policy_net(state_t)
-        return int(q_values.argmax(dim=1).item())
-
-    # -----------------------------------------------------
-    # Store transition
-    # -----------------------------------------------------
-    def store(self, state, action, reward, next_state, done):
-        self.buffer.push(state, action, reward, next_state, done) # type: ignore
-
-    # -----------------------------------------------------
-    # One training step
-    # -----------------------------------------------------
-    def train_step(self):
-        if len(self.buffer) < self.batch_size:
-            return None
-
-        states, actions, rewards, next_states, dones = self.buffer.sample(
-            self.batch_size
-        )
-
-        states_t = torch.tensor(states, dtype=torch.float32, device=self.device)
-        actions_t = torch.tensor(
-            actions, dtype=torch.int64, device=self.device
-        ).unsqueeze(1)
-        rewards_t = torch.tensor(
-            rewards, dtype=torch.float32, device=self.device
-        ).unsqueeze(1)
-        next_states_t = torch.tensor(
-            next_states, dtype=torch.float32, device=self.device
-        )
-        dones_t = torch.tensor(
-            dones, dtype=torch.float32, device=self.device
-        ).unsqueeze(1)
-
-        # Q(s,a)
-        q_values = self.policy_net(states_t).gather(1, actions_t)
-
-        # max_a' Q_target(s', a')
-        with torch.no_grad():
-            next_q_values = self.target_net(next_states_t).max(dim=1, keepdim=True)[0]
-            target = rewards_t + self.gamma * (1 - dones_t) * next_q_values
-
-        loss = self.criterion(q_values, target)
-
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
-        # Update target network
-        if self.global_step % self.target_update == 0:
-            self.target_net.load_state_dict(self.policy_net.state_dict())
-
-        return loss.item()
-
-    # -----------------------------------------------------
-    # Save agent checkpoint
-    # -----------------------------------------------------
-    def save(self, path):
-        checkpoint = {
-            "policy_state_dict": self.policy_net.state_dict(),
-            "target_state_dict": self.target_net.state_dict(),
-            "optimizer_state_dict": self.optimizer.state_dict(),
-            "epsilon": self.epsilon,
-            "global_step": self.global_step,
-        }
-        dir = os.path.dirname(path)
-        if dir and not os.path.exists(dir):
-            os.makedirs(dir, exist_ok=True)
-        torch.save(checkpoint, path)
-        # print(f"[GridAgent] Saved checkpoint to {path}")
-
-    # -----------------------------------------------------
-    # Load agent checkpoint
-    # -----------------------------------------------------
-    def load(self, path):
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"No checkpoint found at {path}")
-
-        checkpoint = torch.load(path, map_location=self.device)
-
-        self.policy_net.load_state_dict(checkpoint["policy_state_dict"])
-        self.target_net.load_state_dict(checkpoint["target_state_dict"])
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-
-        self.epsilon = checkpoint.get("epsilon", 1.0)
-        self.global_step = checkpoint.get("global_step", 0)
-
-        print(f"[GridAgent] Loaded checkpoint from {path}")
-
 
 class GridAgent_2_FIXED:
     """
@@ -486,13 +329,13 @@ class GridAgent(BaseRLAgent):
 
         # Initialize target network with policy network weights
         self.target_net = target_net.to(config.device)
-        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.target_net.load_state_dict(self.policy_net.state_dict()) # type: ignore
         self.target_net.eval()
 
         
     def _initialize_optimizer(self):
         """Initialize optimizer."""
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=self.config.lr)
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=self.config.lr)# type: ignore
     
     
     def select_action(self, state: np.ndarray, training: bool = True) -> int:
@@ -525,7 +368,7 @@ class GridAgent(BaseRLAgent):
         # Greedy action selection
         state_t = self._to_tensor(state).unsqueeze(0)
         with torch.no_grad():
-            q_values = self.policy_net(state_t)
+            q_values = self.policy_net(state_t)# type: ignore
         
         return int(q_values.argmax(dim=1).item())
     
@@ -548,7 +391,7 @@ class GridAgent(BaseRLAgent):
         batch = self.buffer.sample(self.config.batch_size)
         
         # Unpack batch
-        states, actions, rewards, next_states, dones = batch
+        states, actions, rewards, next_states, dones = batch # type: ignore
         
         # Convert to tensors
         states_t = self._to_tensor(states)
@@ -558,7 +401,7 @@ class GridAgent(BaseRLAgent):
         dones_t = self._to_tensor(dones).float()
         
         # Compute current Q-values
-        current_q = self.policy_net(states_t).gather(1, actions_t.unsqueeze(1))
+        current_q = self.policy_net(states_t).gather(1, actions_t.unsqueeze(1))# type: ignore
         
         # Compute target Q-values
         loss = self._compute_loss(
@@ -580,7 +423,7 @@ class GridAgent(BaseRLAgent):
         
         return loss.item()
     
-    def _compute_loss(
+    def _compute_loss(# type: ignore
         self,
         current_q: torch.Tensor,
         next_states: torch.Tensor,
@@ -610,7 +453,7 @@ class GridAgent(BaseRLAgent):
             if self.double_dqn:
                 # Double DQN: use policy network to select actions,
                 # target network to evaluate them
-                next_actions = self.policy_net(next_states).argmax(dim=1, keepdim=True)
+                next_actions = self.policy_net(next_states).argmax(dim=1, keepdim=True)# type: ignore
                 next_q = self.target_net(next_states).gather(1, next_actions)
             else:
                 # Standard DQN: use target network for both selection and evaluation
@@ -625,10 +468,10 @@ class GridAgent(BaseRLAgent):
     
     def update_target_network(self):
         """Update target network weights from policy network."""
-        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.target_net.load_state_dict(self.policy_net.state_dict())# type: ignore
         
         # Log update if training verbose
-        if hasattr(self.config, 'verbose') and self.config.verbose:
+        if hasattr(self.config, 'verbose') and self.config.verbose:# type: ignore
             print(f"[Step {self.global_step}] Target network updated")
     
     # ========================================================================
@@ -648,10 +491,10 @@ class GridAgent(BaseRLAgent):
         self.target_net.reset_parameters() # type: ignore
     
 
-        self.policy_net.to(self.device)
+        self.policy_net.to(self.device)# type: ignore
         self.target_net.to(self.device)
 
-        self.policy_net.load_state_dict(self.target_net.state_dict())
+        self.policy_net.load_state_dict(self.target_net.state_dict())# type: ignore
         self.target_net.eval()
 
         
@@ -677,7 +520,7 @@ class GridAgent(BaseRLAgent):
         checkpoint = {
             "algorithm": self.config.algorithm.value,
             "config": self.config.to_dict(),
-            "policy_state_dict": self.policy_net.state_dict(),
+            "policy_state_dict": self.policy_net.state_dict(),# type: ignore
             "target_state_dict": self.target_net.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "epsilon": self.epsilon,
@@ -708,7 +551,7 @@ class GridAgent(BaseRLAgent):
         
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         
-        self.policy_net.load_state_dict(checkpoint["policy_state_dict"])
+        self.policy_net.load_state_dict(checkpoint["policy_state_dict"])# type: ignore
         self.target_net.load_state_dict(checkpoint["target_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         
@@ -745,13 +588,13 @@ class GridAgent(BaseRLAgent):
         dict
             Statistics including mean, std, min, max, and flags
         """
-        self.policy_net.eval()
+        self.policy_net.eval()# type: ignore
         q_values_list = []
         
         with torch.no_grad():
             for state in states:
                 state_t = self._to_tensor(state).unsqueeze(0)
-                q_values = self.policy_net(state_t).cpu().numpy()[0]
+                q_values = self.policy_net(state_t).cpu().numpy()[0]# type: ignore
                 q_values_list.append(q_values)
         
         q_values_array = np.array(q_values_list)
@@ -820,7 +663,7 @@ class DQNAgent(BaseRLAgent):
         self.target_net.eval()
         
         # Exploration
-        self.epsilon = config.eps_start
+        self.epsilon = config.eps_start# type: ignore
     
     def _initialize_networks(self, hidden_dim: int = 128, **kwargs):
         """Initialize Q-networks if not provided."""
@@ -835,9 +678,9 @@ class DQNAgent(BaseRLAgent):
         self.global_step += 1
         
         # Epsilon decay
-        self.epsilon = self.config.eps_end + (
-            self.config.eps_start - self.config.eps_end
-        ) * np.exp(-1.0 * self.global_step / self.config.eps_decay)
+        self.epsilon = self.config.eps_end + (# type: ignore
+            self.config.eps_start - self.config.eps_end# type: ignore
+        ) * np.exp(-1.0 * self.global_step / self.config.eps_decay)# type: ignore
         
         # Epsilon-greedy
         if training and np.random.random() < self.epsilon:
@@ -862,7 +705,7 @@ class DQNAgent(BaseRLAgent):
         self.optimizer.step()
         
         # Update target network
-        if self.global_step % self.config.target_update == 0:
+        if self.global_step % self.config.target_update == 0:# type: ignore
             self.hard_update(self.policy_net, self.target_net)
         
         return loss.item()
@@ -882,7 +725,7 @@ class DQNAgent(BaseRLAgent):
         
         # Target Q values
         with torch.no_grad():
-            if self.config.use_double_dqn:
+            if self.config.use_double_dqn:# type: ignore
                 # Double DQN: use policy network to select action, target network to evaluate
                 next_actions = self.policy_net(next_states_t).argmax(dim=1, keepdim=True)
                 next_q_values = self.target_net(next_states_t).gather(1, next_actions)
@@ -917,7 +760,7 @@ class A2CAgent(BaseRLAgent):
     
     def __init__(
         self,
-        config: RLConfig,
+        config: PPOConfig,
         policy_network: Optional[nn.Module] = None,
         value_network: Optional[nn.Module] = None,
         **kwargs
@@ -1002,7 +845,7 @@ class A2CAgent(BaseRLAgent):
         entropy = dist.entropy().mean()
         
         # Total loss
-        total_loss = actor_loss + 0.5 * critic_loss - self.config.entropy_coeff * entropy
+        total_loss = actor_loss + 0.5 * critic_loss - self.config.entropy_coeff * entropy # type: ignore
         
         return total_loss
     
@@ -1024,7 +867,7 @@ class PPOAgent(BaseRLAgent):
 
     def __init__(
         self,
-        config: RLConfig,
+        config: PPOConfig,
         policy_network: Optional[nn.Module] = None,
         value_network: Optional[nn.Module] = None,
         **kwargs
@@ -1038,9 +881,14 @@ class PPOAgent(BaseRLAgent):
 
         self.clip_eps = config.clip_eps
         self.entropy_coeff = config.entropy_coeff
-        self.value_coeff = getattr(config, "value_coeff", 0.5)
+        self.value_coeff = config.value_coeff
         self.gamma = config.gamma
-        self.lam = getattr(config, "gae_lambda", 0.95)
+        self.lam = config.gae_lambda # getattr(config, "gae_lambda", 0.95)
+
+        # Logged by PPOTrainer after every episode, even before the first train_step
+        self.last_entropy = 0.0
+        self.last_policy_loss = 0.0
+        self.last_value_loss = 0.0
 
     def _initialize_networks(self, hidden_dim: int = 128, **kwargs):
         """Initialize policy and value networks if not provided."""
@@ -1136,7 +984,7 @@ class SACDiscreteAgent(BaseRLAgent):
 
     def __init__(
         self,
-        config: RLConfig,
+        config: SACConfig,
         policy_network: Optional[nn.Module] = None,
         value_network: Optional[nn.Module] = None,
         **kwargs
@@ -1247,7 +1095,7 @@ class SACDiscreteAgent(BaseRLAgent):
 
 class PPOGRUAgent(BaseRLAgent):
     def __init__(self, 
-                 config: RLConfig,
+                 config: PPOConfig,
                  policy_network: Optional[nn.Module] = None,
                  value_network: Optional[nn.Module] = None,
                  **kwargs):
@@ -1273,8 +1121,8 @@ class PPOGRUAgent(BaseRLAgent):
         self.last_log_prob = torch.tensor(0.0, device=self.device)
 
     def reset_hidden(self, batch_size: int = 1):
-        self.h_policy = torch.zeros(1, batch_size, self.policy_net.hidden_dim, device=self.device)
-        self.h_value  = torch.zeros(1, batch_size, self.value_net.hidden_dim,  device=self.device)
+        self.h_policy = torch.zeros(1, batch_size, self.policy_net.hidden_dim, device=self.device)# type: ignore
+        self.h_value  = torch.zeros(1, batch_size, self.value_net.hidden_dim,  device=self.device)# type: ignore
 
     def _compute_loss(self, batch: Tuple) -> torch.Tensor:
         """
@@ -1286,7 +1134,7 @@ class PPOGRUAgent(BaseRLAgent):
     def _initialize_networks(self, hidden_dim: int = 128, **kwargs):
         pass
 
-    def _to_tensor(self, state):
+    def _to_tensor(self, state):# type: ignore
         if isinstance(state, np.ndarray):
             state = torch.from_numpy(state).float()
         elif isinstance(state, (list, tuple)):
@@ -1314,7 +1162,7 @@ class PPOGRUAgent(BaseRLAgent):
 
     def evaluate_value(self, state) -> float:
         state_t = self._to_tensor(state).unsqueeze(0)
-        value, self.h_value = self.value_net(state_t, self.h_value)
+        value, self.h_value = self.value_net(state_t, self.h_value)# type: ignore
         return float(value.item())
 
     def store_transition(self, state, action, reward, done, log_prob, value):
@@ -1352,15 +1200,15 @@ class PPOGRUAgent(BaseRLAgent):
         returns_t     = torch.tensor(returns,    dtype=torch.float32,    device=self.device)
 
         batch_size = states_t.size(0)
-        h_p = torch.zeros(1, batch_size, self.policy_net.hidden_dim, device=self.device)
-        h_v = torch.zeros(1, batch_size, self.value_net.hidden_dim,  device=self.device)
+        h_p = torch.zeros(1, batch_size, self.policy_net.hidden_dim, device=self.device)# type: ignore
+        h_v = torch.zeros(1, batch_size, self.value_net.hidden_dim,  device=self.device)# type: ignore
 
-        logits, _ = self.policy_net(states_t, h_p)
+        logits, _ = self.policy_net(states_t, h_p)# type: ignore
         dist = torch.distributions.Categorical(logits=logits)
         new_log_probs = dist.log_prob(actions_t)
         entropy = dist.entropy().mean()
 
-        values_pred, _ = self.value_net(states_t, h_v)
+        values_pred, _ = self.value_net(states_t, h_v)# type: ignore
 
         ratio = torch.exp(new_log_probs - old_log_probs_t)
         surr1 = ratio * advantages_t
@@ -1399,22 +1247,21 @@ class RecurrentPPOAgent(BaseRLAgent):
         """
         raise NotImplementedError
 
-    def __init__(self, config: RLConfig, policy_net: nn.Module, value_net: nn.Module):
+    def __init__(self, config: PPORNNConfig, policy_net: nn.Module, value_net: nn.Module):
         super().__init__(config, policy_net, value_net)
 
         self.gamma = config.gamma
-        self.lam = getattr(config, "gae_lambda", 0.95)
+        self.lam = config.gae_lambda #getattr(config, "gae_lambda", 0.95)
         self.clip_eps = config.clip_eps
-        self.value_coef = getattr(config, "value_coeff", 0.5)
+        self.value_coef = config.value_coeff #getattr(config, "value_coeff", 0.5)
         self.entropy_coef = config.entropy_coeff
 
-        self.hidden_dim = policy_net.gru.hidden_size
         self.reset_hidden()
 
         self.buffer = RecurrentPPOBuffer(
             obs_dim=config.obs_dim,
-            seq_len=getattr(config, "seq_len", 32),
-            gamma=self.gamma,
+            seq_len= config.seq_len, #getattr(config, "seq_len", 32)
+            gamma= self.gamma,
             lam=self.lam,
             device=self.device
         )
@@ -1425,20 +1272,25 @@ class RecurrentPPOAgent(BaseRLAgent):
         self.last_value_loss = 0.0
 
     def reset_hidden(self, batch_size: int = 1):
-        self.h_policy = torch.zeros(1, batch_size, self.policy_net.hidden_dim, device=self.device)
-        self.h_value  = torch.zeros(1, batch_size, self.value_net.hidden_dim, device=self.device)
+        self.h_policy = torch.zeros(1, batch_size, self.policy_net.hidden_dim, device=self.device) # type: ignore
+        self.h_value  = torch.zeros(1, batch_size, self.value_net.hidden_dim, device=self.device) # type: ignore
 
-    def _to_tensor(self, s):
-        if isinstance(s, np.ndarray):
-            s = torch.from_numpy(s).float()
-        elif isinstance(s, (list, tuple)):
-            s = torch.tensor(s, dtype=torch.float32)
-        return s.to(self.device)
-
-    def select_action(self, state, training: bool = True):
+    def _to_tensor(
+            self,
+            data: Iterable,
+            dtype: torch.dtype = torch.float32,
+        ) -> torch.Tensor:
+            """Convert numpy array to tensor on device."""
+            if isinstance(data, np.ndarray):
+                data = torch.from_numpy(data).float()
+            elif isinstance(data, (list, tuple)):
+                data = torch.tensor(data, dtype=torch.float32)
+            return data.to(self.device) # type: ignore
+    
+    def select_action(self, state: np.ndarray, training: bool = True):
         state_t = self._to_tensor(state).unsqueeze(0).unsqueeze(1)  # (batch=1, seq=1, obs)
 
-        logits, self.h_policy = self.policy_net(state_t, self.h_policy)
+        logits, self.h_policy = self.policy_net(state_t, self.h_policy) # type: ignore
         logits = logits.squeeze(1)  # (1, action_dim)
         dist = torch.distributions.Categorical(logits=logits)
 
@@ -1450,17 +1302,17 @@ class RecurrentPPOAgent(BaseRLAgent):
         log_prob = dist.log_prob(action)
         self.last_log_prob = log_prob.detach()
 
-        value_seq, self.h_value = self.value_net(state_t, self.h_value)
+        value_seq, self.h_value = self.value_net(state_t, self.h_value) # type: ignore
         value = value_seq.squeeze(1)  # (1,)
         return int(action.item()), float(log_prob.item()), float(value.item())
 
-    def store_episode(self, states, actions, rewards, dones, log_probs, values):
+    def store(self, states, actions, rewards, dones, log_probs, values):#type: ignore
         self.buffer.store_episode(states, actions, rewards, dones, log_probs, values)
 
     def _value_fn(self, state):
         s = self._to_tensor(state).unsqueeze(0).unsqueeze(1)
         h = torch.zeros_like(self.h_value)
-        v_seq, _ = self.value_net(s, h)
+        v_seq, _ = self.value_net(s, h) # type: ignore
         return float(v_seq.squeeze(1).item())
 
     def train_step(self):
@@ -1474,15 +1326,15 @@ class RecurrentPPOAgent(BaseRLAgent):
         returns_t       = torch.nn.utils.rnn.pad_sequence(seq_ret, batch_first=True).to(self.device)
 
         batch_size, seq_len, _ = states_t.shape
-        h_p = torch.zeros(1, batch_size, self.policy_net.hidden_dim, device=self.device)
-        h_v = torch.zeros(1, batch_size, self.value_net.hidden_dim, device=self.device)
+        h_p = torch.zeros(1, batch_size, self.policy_net.hidden_dim, device=self.device) # type: ignore
+        h_v = torch.zeros(1, batch_size, self.value_net.hidden_dim, device=self.device) # type: ignore
 
-        logits, _ = self.policy_net(states_t, h_p)
+        logits, _ = self.policy_net(states_t, h_p) # type: ignore
         dist = torch.distributions.Categorical(logits=logits)
         new_log_probs = dist.log_prob(actions_t)
         entropy = dist.entropy().mean()
 
-        values_pred, _ = self.value_net(states_t, h_v)
+        values_pred, _ = self.value_net(states_t, h_v) # type: ignore
 
         ratio = torch.exp(new_log_probs - old_log_probs_t)
         surr1 = ratio * advantages_t
@@ -1527,7 +1379,7 @@ if __name__ == "__main__":
     print("=" * 70)
     
     # Create DQN agent
-    config = RLConfig(
+    config = PPOConfig(
         name ="test",
         obs_dim=10,
         action_dim=3,

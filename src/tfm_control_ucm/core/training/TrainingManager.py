@@ -369,6 +369,7 @@ class PPOTrainer(BaseTrainer):
         
         checkpoint_path = f"{self.models_save_dir}/{agent.config.name}/final.pth"# {self.exec_date}
         agent.save(checkpoint_path)
+
 class PPOGRUTrainer(BaseTrainer):
 
     def simulate(self, agent: BaseRLAgent, env: gym.Env, num_episodes: int = 10, render: bool = False):
@@ -576,7 +577,7 @@ class RecurrentPPOTrainer(BaseTrainer):
                         ep_steps += 1
                         global_step += 1
 
-                    agent.store_episode(states, actions, rewards, dones, log_probs, values)
+                    agent.store(states, actions, rewards, dones, log_probs, values)
 
                     loss = agent.train_step()
 
@@ -631,205 +632,205 @@ class RecurrentPPOTrainer(BaseTrainer):
             print(f"[SIM] Episode {episode+1}/{num_episodes} - Reward: {ep_reward:.2f} - Steps: {steps}")
 
 
-class MultiAgentTrainer(BaseTrainer):
-    """
-    Trainer class for training multiple agents in a shared environment.
-    Each agent learns its own policy while interacting with the same environment.
-    """
+# class MultiAgentTrainer(BaseTrainer):
+#     """
+#     Trainer class for training multiple agents in a shared environment.
+#     Each agent learns its own policy while interacting with the same environment.
+#     """
 
-    def __init__(self, logs_save_dir: str, models_save_dir: str, config: Optional[TrainerConfig] = None):
-        super().__init__(logs_save_dir, models_save_dir, config)
+#     def __init__(self, logs_save_dir: str, models_save_dir: str, config: Optional[TrainerConfig] = None):
+#         super().__init__(logs_save_dir, models_save_dir, config)
     
     
-    def add_environments(self, *envs: gym.Env):
-        if len(self.envs) == 1 or len(envs) > 1:
-            raise ValueError("MultiAgentTrainer allows only one environment")
-        return super().add_environments(*envs)
+#     def add_environments(self, *envs: gym.Env):
+#         if len(self.envs) == 1 or len(envs) > 1:
+#             raise ValueError("MultiAgentTrainer allows only one environment")
+#         return super().add_environments(*envs)
 
     
     
-    def train(self, num_episodes: Optional[int] = None, eps_step: Optional[int] = None):
-        if len(self.envs) == 0 or len(self.agents) == 0:
-            raise ValueError("One environment and at least one agent must be added before training")
-        # If parallel is True, we will train each agent in a separate thread, sharing the same environment.
-        num_episodes = num_episodes or self.config.num_episodes
-        eps_step = eps_step or self.config.eps_step
+#     def train(self, num_episodes: Optional[int] = None, eps_step: Optional[int] = None):
+#         if len(self.envs) == 0 or len(self.agents) == 0:
+#             raise ValueError("One environment and at least one agent must be added before training")
+#         # If parallel is True, we will train each agent in a separate thread, sharing the same environment.
+#         num_episodes = num_episodes or self.config.num_episodes
+#         eps_step = eps_step or self.config.eps_step
         
-        if self.config.parallel:
-            with ThreadPoolExecutor(max_workers=len(self.agents)) as executor:
-                futures = [executor.submit(super()._inner_training, agent, self.envs[0], num_episodes, eps_step) for agent in self.agents]
-                for future in futures:
-                    future.result()  # Wait for all agents to finish
-        else:
-            for agent in self.agents:
-                super()._inner_training(agent, self.envs[0], num_episodes, eps_step)
+#         if self.config.parallel:
+#             with ThreadPoolExecutor(max_workers=len(self.agents)) as executor:
+#                 futures = [executor.submit(super()._inner_training, agent, self.envs[0], num_episodes, eps_step) for agent in self.agents]
+#                 for future in futures:
+#                     future.result()  # Wait for all agents to finish
+#         else:
+#             for agent in self.agents:
+#                 super()._inner_training(agent, self.envs[0], num_episodes, eps_step)
 
-class MultiEnvironmentTrainer(BaseTrainer):
-    """
-    Trainer class for training multiple agents in a shared environment.
-    Each agent learns its own policy while interacting with the same environment.
-    """
+# class MultiEnvironmentTrainer(BaseTrainer):
+#     """
+#     Trainer class for training multiple agents in a shared environment.
+#     Each agent learns its own policy while interacting with the same environment.
+#     """
 
-    def __init__(self, logs_save_dir: str, models_save_dir: str, config: Optional[TrainerConfig] = None):
-        super().__init__(logs_save_dir, models_save_dir, config)
-
-    
-    def add_agents(self, *agents: BaseRLAgent):
-        if len(self.agents) == 1 or len(agents) > 1:
-            raise ValueError("MultiEnvironmentTrainer allows only one agent")
-        return super().add_agents(*agents)
-    
+#     def __init__(self, logs_save_dir: str, models_save_dir: str, config: Optional[TrainerConfig] = None):
+#         super().__init__(logs_save_dir, models_save_dir, config)
 
     
-    def train(self, num_episodes: Optional[int] = None, eps_step: Optional[int] = None):
-        num_episodes = num_episodes or self.config.num_episodes
-        eps_step = eps_step or self.config.eps_step
-        if len(self.envs) == 0 or len(self.agents) == 0:
-            raise ValueError("At least one environment and one agent must be added before training")
-        user = super() if self.config.onePerEnv else self
-        # If parallel is True, we will train each agent in a separate thread, sharing the same environment.
-        if self.config.onePerEnv:
-            if self.config.parallel:
-                with ThreadPoolExecutor(max_workers=len(self.envs)) as executor:
-                    futures = [executor.submit(super()._inner_training, self.agents[0], env, num_episodes, eps_step) for env in self.envs]
-                    for future in futures:
-                        future.result()  # Wait for all agents to finish
-            else:
-                for env in self.envs:
-                    super()._inner_training(self.agents[0], env, num_episodes, eps_step)
-        else:
-            self._inner_training(self.agents[0], None, num_episodes, eps_step)
+#     def add_agents(self, *agents: BaseRLAgent):
+#         if len(self.agents) == 1 or len(agents) > 1:
+#             raise ValueError("MultiEnvironmentTrainer allows only one agent")
+#         return super().add_agents(*agents)
     
-    
-    def _inner_training(self, agent: BaseRLAgent, env: Optional[gym.Env], num_episodes: int, eps_step: int):
-        global_step = 0
-        agent_id = id(agent)
-        episodePerEnv = num_episodes//max(1, self.config.cyclesPerEnv)
-        idx_env = 0
-        current_env = self.envs[idx_env]
-
-        episodes = tqdm.tqdm(range(num_episodes)) if self.config.useTQDM else range(num_episodes)
-        recent_successes = deque(maxlen=1000)
-        recent_rewards = deque(maxlen=50)
-        recent_actions = deque(maxlen=50)
-        earlyStopping = EarlyStopping(save_path=f"{self.models_save_dir}/{agent.config.name}/early_stopping.pth") if self.config.useEarlyStop else None
-
-        with SummaryWriter(log_dir=f"{self.logs_save_dir}/{self.exec_date}/agent_{agent_id}") as writer:
-            with InterruptHandler(agent, writer, self.logs_save_dir) as handler:
-                for episode in episodes:
-                    state, _ = current_env.reset()
-                    done = False
-
-                    ep_step = 0
-                    ep_reward = 0
-                    terminated = False
-                    ep_action_counts = [0]*self.act_dim
-                    ep_terminated_count= [0]*2
-                    start_dist = state[-2]
-
-                    while not done:
-                        action = agent.select_action(state)
-                        next_state, reward, terminated, truncated, info = current_env.step(action)
-                        done = terminated or truncated
-                        agent.store(state, action, reward, next_state, done)
-
-                        ep_step += 1
-                        ep_reward += float(reward)
-                        ep_action_counts[action] += 1
-                        ep_terminated_count[int(terminated)] += 1
-                        global_step += 1
-
-                        state = next_state
-
-                        if eps_step>0 and ep_step % eps_step == 0:
-                            loss = agent.train_step()
-
-                        if done:
-                            break
-                    if self.config.useTQDM:
-                        episodes.set_description(f"Agent {agent_id} - Episode {episode} - Reward: {ep_reward:.2f} - Steps: {ep_step} - Start Dist: {start_dist:.2f} - End Dist: {state[-2]:.2f}") # type: ignore
-                    
-                    dominant_action = int(np.argmax(ep_action_counts))
-                    dominant_success = int(np.argmax(ep_terminated_count))
-                    recent_actions.append(dominant_action)
-                    recent_rewards.append(ep_reward)
-                    recent_successes.append(dominant_success)
-
-                    if eps_step==0:
-                        loss = agent.train_step()
-                        if loss is not None:
-                            writer.add_scalar(f"Loss/Episode", loss, episode)
-
-                    
-                    writer.add_scalar("Policy/Epsilon/Episode",  agent.epsilon,              episode)
-                    writer.add_scalar("Action/Dominant/Episode",  dominant_action,            episode)
-
-                    writer.add_scalar("Steps/Episode",           ep_step,                   episode)
-                    
-                    writer.add_scalar(f"Reward/Accumulated", ep_reward, episode)
-                    writer.add_scalar(f"Reward/Avg", ep_reward/ep_step if ep_step > 0 else 0, episode)
-
-                    writer.add_scalar(f"Success/Episode", int(terminated), episode)
-                    writer.add_scalar(f"Distances/Start", start_dist, episode)
-                    writer.add_scalar(f"Distances/End", state[-2], episode)
-                    writer.add_scalar(f"Distances/Change", start_dist - state[-2], episode)
-                    
-                    
-                    if self.config.useEarlyStop and earlyStopping is not None:
-                        if earlyStopping(ep_reward, agent, self.print):
-                            break
-
-                    if episode % 500 == 0 and episode > 0:
-                        checkpoint_path = f"{self.models_save_dir}/{self.exec_date}/{agent_id}_ep_{episode}.pth"
-                        agent.save(checkpoint_path)
-                    
-                    if episode % episodePerEnv == 0 and episode > 0:
-                        idx_env = (idx_env + 1) % len(self.envs)
-                        current_env = self.envs[idx_env]
-
-class MultiTrainer(BaseTrainer):
-    """
-    Trainer class for training multiple agents in multiple environments.
-    Each agent learns its own policy while interacting with its own environment.
-    """
-
-    def __init__(self, logs_save_dir: str, models_save_dir: str, config: Optional[TrainerConfig] = None):
-        super().__init__(logs_save_dir, models_save_dir, config)
 
     
-    def train(self, num_episodes: int | None = None, eps_step: int | None = None):
-        num_episodes = num_episodes or self.config.num_episodes
-        eps_step = eps_step or self.config.eps_step
-        if len(self.envs) == 0 or len(self.agents) == 0:
-            raise ValueError("At least one environment and one agent must be added before training")
+#     def train(self, num_episodes: Optional[int] = None, eps_step: Optional[int] = None):
+#         num_episodes = num_episodes or self.config.num_episodes
+#         eps_step = eps_step or self.config.eps_step
+#         if len(self.envs) == 0 or len(self.agents) == 0:
+#             raise ValueError("At least one environment and one agent must be added before training")
+#         user = super() if self.config.onePerEnv else self
+#         # If parallel is True, we will train each agent in a separate thread, sharing the same environment.
+#         if self.config.onePerEnv:
+#             if self.config.parallel:
+#                 with ThreadPoolExecutor(max_workers=len(self.envs)) as executor:
+#                     futures = [executor.submit(super()._inner_training, self.agents[0], env, num_episodes, eps_step) for env in self.envs]
+#                     for future in futures:
+#                         future.result()  # Wait for all agents to finish
+#             else:
+#                 for env in self.envs:
+#                     super()._inner_training(self.agents[0], env, num_episodes, eps_step)
+#         else:
+#             self._inner_training(self.agents[0], None, num_episodes, eps_step)
+    
+    
+#     def _inner_training(self, agent: BaseRLAgent, env: Optional[gym.Env], num_episodes: int, eps_step: int):
+#         global_step = 0
+#         agent_id = id(agent)
+#         episodePerEnv = num_episodes//max(1, self.config.cyclesPerEnv)
+#         idx_env = 0
+#         current_env = self.envs[idx_env]
+
+#         episodes = tqdm.tqdm(range(num_episodes)) if self.config.useTQDM else range(num_episodes)
+#         recent_successes = deque(maxlen=1000)
+#         recent_rewards = deque(maxlen=50)
+#         recent_actions = deque(maxlen=50)
+#         earlyStopping = EarlyStopping(save_path=f"{self.models_save_dir}/{agent.config.name}/early_stopping.pth") if self.config.useEarlyStop else None
+
+#         with SummaryWriter(log_dir=f"{self.logs_save_dir}/{self.exec_date}/agent_{agent_id}") as writer:
+#             with InterruptHandler(agent, writer, self.logs_save_dir) as handler:
+#                 for episode in episodes:
+#                     state, _ = current_env.reset()
+#                     done = False
+
+#                     ep_step = 0
+#                     ep_reward = 0
+#                     terminated = False
+#                     ep_action_counts = [0]*self.act_dim
+#                     ep_terminated_count= [0]*2
+#                     start_dist = state[-2]
+
+#                     while not done:
+#                         action = agent.select_action(state)
+#                         next_state, reward, terminated, truncated, info = current_env.step(action)
+#                         done = terminated or truncated
+#                         agent.store(state, action, reward, next_state, done)
+
+#                         ep_step += 1
+#                         ep_reward += float(reward)
+#                         ep_action_counts[action] += 1
+#                         ep_terminated_count[int(terminated)] += 1
+#                         global_step += 1
+
+#                         state = next_state
+
+#                         if eps_step>0 and ep_step % eps_step == 0:
+#                             loss = agent.train_step()
+
+#                         if done:
+#                             break
+#                     if self.config.useTQDM:
+#                         episodes.set_description(f"Agent {agent_id} - Episode {episode} - Reward: {ep_reward:.2f} - Steps: {ep_step} - Start Dist: {start_dist:.2f} - End Dist: {state[-2]:.2f}") # type: ignore
+                    
+#                     dominant_action = int(np.argmax(ep_action_counts))
+#                     dominant_success = int(np.argmax(ep_terminated_count))
+#                     recent_actions.append(dominant_action)
+#                     recent_rewards.append(ep_reward)
+#                     recent_successes.append(dominant_success)
+
+#                     if eps_step==0:
+#                         loss = agent.train_step()
+#                         if loss is not None:
+#                             writer.add_scalar(f"Loss/Episode", loss, episode)
+
+                    
+#                     writer.add_scalar("Policy/Epsilon/Episode",  agent.epsilon,              episode)
+#                     writer.add_scalar("Action/Dominant/Episode",  dominant_action,            episode)
+
+#                     writer.add_scalar("Steps/Episode",           ep_step,                   episode)
+                    
+#                     writer.add_scalar(f"Reward/Accumulated", ep_reward, episode)
+#                     writer.add_scalar(f"Reward/Avg", ep_reward/ep_step if ep_step > 0 else 0, episode)
+
+#                     writer.add_scalar(f"Success/Episode", int(terminated), episode)
+#                     writer.add_scalar(f"Distances/Start", start_dist, episode)
+#                     writer.add_scalar(f"Distances/End", state[-2], episode)
+#                     writer.add_scalar(f"Distances/Change", start_dist - state[-2], episode)
+                    
+                    
+#                     if self.config.useEarlyStop and earlyStopping is not None:
+#                         if earlyStopping(ep_reward, agent, self.print):
+#                             break
+
+#                     if episode % 500 == 0 and episode > 0:
+#                         checkpoint_path = f"{self.models_save_dir}/{self.exec_date}/{agent_id}_ep_{episode}.pth"
+#                         agent.save(checkpoint_path)
+                    
+#                     if episode % episodePerEnv == 0 and episode > 0:
+#                         idx_env = (idx_env + 1) % len(self.envs)
+#                         current_env = self.envs[idx_env]
+
+# class MultiTrainer(BaseTrainer):
+#     """
+#     Trainer class for training multiple agents in multiple environments.
+#     Each agent learns its own policy while interacting with its own environment.
+#     """
+
+#     def __init__(self, logs_save_dir: str, models_save_dir: str, config: Optional[TrainerConfig] = None):
+#         super().__init__(logs_save_dir, models_save_dir, config)
+
+    
+#     def train(self, num_episodes: int | None = None, eps_step: int | None = None):
+#         num_episodes = num_episodes or self.config.num_episodes
+#         eps_step = eps_step or self.config.eps_step
+#         if len(self.envs) == 0 or len(self.agents) == 0:
+#             raise ValueError("At least one environment and one agent must be added before training")
         
-        iterator = list(zip(self.agents, self.envs)) if self.config.style == "single" else [(agent, env) for agent in self.agents for env in self.envs] if self.config.style == "mixed" else [(agent, self.envs) for agent in self.agents]
+#         iterator = list(zip(self.agents, self.envs)) if self.config.style == "single" else [(agent, env) for agent in self.agents for env in self.envs] if self.config.style == "mixed" else [(agent, self.envs) for agent in self.agents]
         
-        if self.config.style == "multi-env":
-            if self.config.parallel:
-                with ThreadPoolExecutor(max_workers=len(iterator)) as executor:
-                    futures = [executor.submit(self.__multi_env_training, agent, envs, num_episodes, eps_step) for agent, envs in iterator] # type: ignore
-                    for future in futures:
-                        future.result()  # Wait for all agents to finish
-            else:
-                for agent, envs in iterator:
-                    super().__multi_env_training(agent, envs, num_episodes, eps_step) # type: ignore
-        else:
-            if self.config.parallel:
-                with ThreadPoolExecutor(max_workers=len(iterator)) as executor:
-                    futures = [executor.submit(super()._inner_training, agent, env, num_episodes, eps_step) for agent, env in iterator] # type: ignore
-                    for future in futures:
-                        future.result()  # Wait for all agents to finish
-            else:
-                for agent, env in iterator:
-                    super()._inner_training(agent, env, num_episodes, eps_step) # type: ignore
+#         if self.config.style == "multi-env":
+#             if self.config.parallel:
+#                 with ThreadPoolExecutor(max_workers=len(iterator)) as executor:
+#                     futures = [executor.submit(self.__multi_env_training, agent, envs, num_episodes, eps_step) for agent, envs in iterator] # type: ignore
+#                     for future in futures:
+#                         future.result()  # Wait for all agents to finish
+#             else:
+#                 for agent, envs in iterator:
+#                     super().__multi_env_training(agent, envs, num_episodes, eps_step) # type: ignore
+#         else:
+#             if self.config.parallel:
+#                 with ThreadPoolExecutor(max_workers=len(iterator)) as executor:
+#                     futures = [executor.submit(super()._inner_training, agent, env, num_episodes, eps_step) for agent, env in iterator] # type: ignore
+#                     for future in futures:
+#                         future.result()  # Wait for all agents to finish
+#             else:
+#                 for agent, env in iterator:
+#                     super()._inner_training(agent, env, num_episodes, eps_step) # type: ignore
     
-    def __multi_env_training(self, agent: BaseRLAgent, envs: list[gym.Env], num_episodes: int, eps_step: int):
-        # This method is used when style is "multi-env". It trains a single agent on multiple environments sequentially.
-        # The agent's experience buffer and policy are shared across all environments.
-        aux_env = MultiEnvironmentTrainer(logs_save_dir=self.logs_save_dir, models_save_dir=self.models_save_dir, config=self.config)
-        aux_env.config.onePerEnv = False
-        aux_env.add_environments(*envs) # type: ignore
-        aux_env.add_agents(agent)
-        aux_env.train(num_episodes, eps_step)
+#     def __multi_env_training(self, agent: BaseRLAgent, envs: list[gym.Env], num_episodes: int, eps_step: int):
+#         # This method is used when style is "multi-env". It trains a single agent on multiple environments sequentially.
+#         # The agent's experience buffer and policy are shared across all environments.
+#         aux_env = MultiEnvironmentTrainer(logs_save_dir=self.logs_save_dir, models_save_dir=self.models_save_dir, config=self.config)
+#         aux_env.config.onePerEnv = False
+#         aux_env.add_environments(*envs) # type: ignore
+#         aux_env.add_agents(agent)
+#         aux_env.train(num_episodes, eps_step)
 
