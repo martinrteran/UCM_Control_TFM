@@ -100,25 +100,35 @@ class GridLidar:
             
         return cache_table
 
-    def _compute_distances(self, gridmap: GridMap, position: torch.Tensor, orientation: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _is_full_circle(self) -> bool:
+        return abs(self.fov_rad - 2 * np.pi) < 1e-6
+
+    def _compute_distances(self, gridmap: GridMap, position: torch.Tensor, heading: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Calcula las colisiones de los rayos delegando en caché o procesamiento on-the-fly.
-        Devuelve (hit_distances, angles).
+        Devuelve (hit_distances, angles), con los ángulos relativos al rumbo del robot.
+
+        La caché guarda los rayos en el marco del mundo. Con un campo de visión de 360°
+        girar el robot solo cambia el ángulo relativo de cada rayo; con un campo menor
+        hay que lanzar los rayos girados, así que se calculan on-the-fly.
         """
-        if self.with_cache:
+        heading_is_zero = bool(torch.all(heading == 0))
+        if self.with_cache and (heading_is_zero or self._is_full_circle()):
             if gridmap.name not in self._map_caches:
                 self._map_caches[gridmap.name] = self._build_full_map_cache(gridmap)
-                
+
             c, r = position.long()
             hit_distances = self._map_caches[gridmap.name][r, c].clone()
-            angles = self.angles_rad.flatten() + orientation
-            
+            world = self.angles_rad.flatten()
+            angles = torch.atan2(torch.sin(world - heading), torch.cos(world - heading))
+
         else:
             dist = torch.arange(1, self.max_range + 1, device=self.device, dtype=torch.float32)
-            angles = (self.angles_rad + orientation).flatten()
-            
-            dr = torch.round(-torch.sin(angles)[:, None] * dist).to(torch.int32)
-            dc = torch.round(torch.cos(angles)[:, None] * dist).to(torch.int32)
+            world = (self.angles_rad + heading).flatten()
+            angles = self.angles_rad.flatten().clone()
+
+            dr = torch.round(-torch.sin(world)[:, None] * dist).to(torch.int32)
+            dc = torch.round(torch.cos(world)[:, None] * dist).to(torch.int32)
 
             cc_global = position[0].long() + dc
             rr_global = position[1].long() + dr
@@ -143,11 +153,28 @@ class GridLidar:
 
         return hit_distances, angles
 
-    def scan(self, gridmap: GridMap, position: Union[np.ndarray, torch.Tensor, Iterable[int]], orientation: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
-        position = position if isinstance(position, torch.Tensor) else torch.tensor(position, device=self.device, dtype=torch.float32)
-        orientation = orientation if isinstance(orientation, torch.Tensor) else torch.tensor(orientation, device=self.device, dtype=torch.float32)
+    def scan(self, gridmap: GridMap, position: Union[np.ndarray, torch.Tensor, Iterable[int]], heading: Union[float, np.ndarray, torch.Tensor] = 0.0) -> torch.Tensor:
+        """
+        Cast the rays from a cell.
 
-        hit_distances, angles = self._compute_distances(gridmap, position, orientation)
+        Parameters
+        ----------
+        gridmap : GridMap
+            Map to scan.
+        position : array-like
+            Robot position (col, row).
+        heading : float, optional
+            Direction the robot faces (radians, 0 = east, counter-clockwise).
+
+        Returns
+        -------
+        torch.Tensor
+            (num_rays, 2) rows of [distance, angle relative to the heading].
+        """
+        position = position if isinstance(position, torch.Tensor) else torch.tensor(np.asarray(position), device=self.device, dtype=torch.float32)
+        heading = heading if isinstance(heading, torch.Tensor) else torch.tensor(float(np.asarray(heading)), device=self.device, dtype=torch.float32)
+
+        hit_distances, angles = self._compute_distances(gridmap, position, heading)
         return torch.column_stack((hit_distances, angles))
 
 # class GridLidar_2D(GridLidar):

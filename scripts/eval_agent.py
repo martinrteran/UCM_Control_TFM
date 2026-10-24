@@ -131,11 +131,13 @@ def build_env(args, obs_dim: int, action_dim: int, run_config: Optional[dict]):
                                            lidar_config=lidar_config, num_sections=num_sections,
                                            max_iteration_steps=max_steps, cell_size=args.cell_size,
                                            render_mode="human" if args.render else None)
+    # Runs without config.json (tests <= 24) were trained with the mirrored goal angle
+    env._legacy_goal_angle = run_config is None if args.legacy_goal_angle is None else args.legacy_goal_angle
     if env.get_observation_dim() != obs_dim:
         raise ValueError(f"The rebuilt environment gives obs_dim={env.get_observation_dim()} but the checkpoint "
                          f"expects {obs_dim}. Pass the training settings explicitly or add a config.json to the run.")
     print(f"[env] robot={type(robot).__name__}  sections={num_sections}  max_steps={max_steps}  "
-          f"maps={[Path(p).stem for p in map_paths]}")
+          f"maps={[Path(p).stem for p in map_paths]}  legacy_goal_angle={env._legacy_goal_angle}")
     return env
 
 
@@ -202,6 +204,8 @@ def main():
     parser.add_argument("--config", type=Path, default=None,
                         help="Run config.json to rebuild the environment (default: runs/Test/<N>/config.json)")
     parser.add_argument("--seed", type=int, default=None, help="Seed for map choice and start/goal positions")
+    parser.add_argument("--legacy-goal-angle", action=argparse.BooleanOptionalAction, default=None,
+                        help="Use the mirrored goal angle of tests <= 24 (default: on when the run has no config.json)")
     parser.add_argument("--render", action="store_true",
                         help="Render the environment (requires pygame)")
     parser.add_argument("--cell-size", type=int, default=10,

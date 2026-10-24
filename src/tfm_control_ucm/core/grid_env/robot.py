@@ -58,6 +58,33 @@ class Robot(ABC):
         """
         self.position = position
 
+    @property
+    def heading(self) -> float:
+        """
+        Direction the robot faces, in radians, in the lidar convention:
+        0 = east (+col), pi/2 = north (-row), counter-clockwise positive.
+        Robots without orientation face east (0).
+        """
+        return 0.0
+
+    def random_reset(self, map: GridMap, rng: np.random.Generator):
+        """
+        Place the robot on a uniformly random free cell of the map.
+
+        Parameters
+        ----------
+        map : GridMap
+            Map to place the robot on.
+        rng : np.random.Generator
+            Random generator (the environment's, so reset(seed=...) is reproducible).
+        """
+        height, width = map.grid.shape
+        while True:
+            r, c = int(rng.integers(height)), int(rng.integers(width))
+            if map.is_free(r, c):
+                self.reset((c, r))
+                return
+
     @abstractmethod
     def move(self, map: GridMap, direction: Any) -> bool:
         """
@@ -130,6 +157,16 @@ class GridRobot(Robot):
         self.position = position
         self.orientation = orientation
         self._orientation_idx = self.ORIENTATIONS_LIST.index(orientation)
+
+    def random_reset(self, map: GridMap, rng: np.random.Generator):
+        """Place the robot on a random free cell, facing a random cardinal direction."""
+        super().random_reset(map, rng)
+        self.reset(self.position, self.ORIENTATIONS_LIST[int(rng.integers(len(self.ORIENTATIONS_LIST)))])
+
+    @property
+    def heading(self) -> float:
+        dc, dr = self.orientation.get_value()
+        return float(np.arctan2(-dr, dc)) # Rows grow downwards, the lidar convention is counter-clockwise
 
     # ------------------------------------------------------------
     # Orientation control

@@ -159,7 +159,7 @@ def test_random_map_selection_is_uniform():
     env = Grid_Robot_Sections_Env_MultiMap(maps=make_maps([(25, 25)] * 4), robot=GridRobotNotTurning(),
                                            reward_fn=zero_reward, lidar_config=LIDAR)
     env.reset(seed=0)
-    counts = Counter(env._get_random_map().name for _ in range(4000))
+    counts = Counter(env._select_map().name for _ in range(4000))
     assert set(counts) == {"m0", "m1", "m2", "m3"}
     for n in counts.values():
         assert 800 < n < 1200  # 25 % ± 5 %
@@ -170,7 +170,7 @@ def test_random_map_selection_is_reproducible_with_seed():
         env = Grid_Robot_Sections_Env_MultiMap(maps=make_maps([(25, 25)] * 4), robot=GridRobotNotTurning(),
                                                reward_fn=zero_reward, lidar_config=LIDAR)
         env.reset(seed=seed)
-        return [env._get_random_map().name for _ in range(20)]
+        return [env._select_map().name for _ in range(20)]
 
     assert sequence(7) == sequence(7)
 
