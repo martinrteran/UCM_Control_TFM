@@ -18,7 +18,7 @@ Analyze the results of a training run from this project.
 
 3. **Read the corresponding training script** `train/grid_training_{N}.py` to understand the configuration (algorithm, hyperparams, maps, `TrainerConfig`).
 
-4. **Report what TensorBoard metrics were logged** (from `TrainingManager._inner_training`):
+4. **Report what TensorBoard metrics were logged** (from `BaseTrainer._log_episode` in `TrainingManager.py`, same for every algorithm since test 25; older PPO runs used `Done/Success`, `Steps/Ratio`, `Done/Reward/Episode`, which `plot_runs.py`/`compare_runs.py` read as aliases):
    - `Loss/Episode` or `Loss/Global step`
    - `Policy/Epsilon/Episode`
    - `Steps/Episode`, `Steps/Min/Episode`, `Steps/Ratio/Episode` (actual steps ÷ optimal BFS steps — lower is better)
@@ -41,7 +41,7 @@ python scripts/eval_agent.py checkpoints/Test/{N}/{AgentName}/final.pth --episod
 
 ### `plot_runs.py` — what it reads and plots
 
-The script reads these exact TensorBoard tags (from `TrainingManager._inner_training`):
+The script reads these exact TensorBoard tags (from `BaseTrainer._log_episode` in `TrainingManager.py`, same for every algorithm since test 25; older PPO runs used `Done/Success`, `Steps/Ratio`, `Done/Reward/Episode`, which `plot_runs.py`/`compare_runs.py` read as aliases):
 
 ```python
 METRICS = {

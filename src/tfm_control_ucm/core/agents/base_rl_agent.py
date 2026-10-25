@@ -172,11 +172,55 @@ class BaseRLAgent(ABC):
         Algorithm-specific implementation.
         """
         raise NotImplementedError
-    
+
+    # ========================================================================
+    # Episode hooks (used by BaseTrainer's training loop)
+    # ========================================================================
+    # The trainer only talks to agents through these methods, so DQN, PPO and the
+    # recurrent PPO variants share one loop and log the same metrics. The defaults
+    # implement an off-policy agent with a replay buffer; on-policy agents keep the
+    # episode inside the agent and train in on_episode_end.
+
+    train_on_step: bool = True # True: the trainer calls train_step every TrainerConfig.eps_step steps
+
+    def on_episode_start(self):
+        """Called after env.reset(), before the first action (e.g. reset recurrent state)."""
+        pass
+
+    def act(self, state: np.ndarray, training: bool = True) -> int:
+        """
+        Action to take in `state`.
+
+        With training=True the agent may record what it needs to learn from this
+        step (log-probabilities, values...); with training=False it acts greedily
+        and records nothing.
+        """
+        return int(self.select_action(state, training=training)) # type: ignore
+
+    def observe(self, state: np.ndarray, action: int, reward: float, next_state: np.ndarray,
+                terminated: bool, truncated: bool):
+        """Record the outcome of the last act() call."""
+        self.store(state, action, reward, next_state, terminated or truncated)
+
+    def on_episode_end(self, last_state: np.ndarray) -> Optional[float]:
+        """
+        Called when the episode ends. On-policy agents train here.
+
+        Returns
+        -------
+        float or None
+            Loss of the update done here, if any.
+        """
+        return None
+
+    def episode_metrics(self) -> Dict[str, float]:
+        """Agent-specific scalars to log once per episode, as {tensorboard_tag: value}."""
+        return {"Policy/Epsilon/Episode": float(self.epsilon)} if hasattr(self, "epsilon") else {}
+
     # ========================================================================
     # Common utilities
     # ========================================================================
-    
+
     def store(
         self,
         state: np.ndarray,

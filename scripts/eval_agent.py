@@ -145,6 +145,7 @@ def run_eval(agent, env, num_episodes: int, render: bool, seed: Optional[int]):
     records = []
     for ep in range(num_episodes):
         state, _ = env.reset(seed=seed if ep == 0 else None)
+        agent.on_episode_start()
         map_name = env.map.name
         done = False
         ep_reward = 0.0
@@ -154,7 +155,7 @@ def run_eval(agent, env, num_episodes: int, render: bool, seed: Optional[int]):
         while not done:
             if render:
                 env.render()
-            action = agent.select_action(state, training=False)
+            action = agent.act(state, training=False)
             state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
             ep_reward += reward

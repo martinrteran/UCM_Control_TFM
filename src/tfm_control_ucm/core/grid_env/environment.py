@@ -220,7 +220,7 @@ class BaseGridEnv(gym.Env, ABC):
 
         obs = self._get_observation()
         self._start_episode(obs)
-        info = {'map': self.map.name, 'optimal_steps': self._optimal_steps()}
+        info = {'map': self.map.name, 'optimal_steps': self._optimal_steps(), 'dist2goal': self._dist_to_goal()}
 
         return obs, info
 

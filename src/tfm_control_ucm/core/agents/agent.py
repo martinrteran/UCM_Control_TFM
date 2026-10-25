@@ -12,6 +12,7 @@ Actions:
 Author: Martin
 """
 
+import copy
 import os
 from typing import Iterable, Optional, Tuple, List
 import numpy as np
@@ -653,13 +654,8 @@ class DQNAgent(BaseRLAgent):
             **kwargs
         )
         
-        # Target network for DQN
-        self.target_net = SimpleQNetwork(
-            config.obs_dim,
-            config.action_dim,
-            hidden_dim=kwargs.get("hidden_dim", 128)
-        ).to(self.device)
-        self.target_net.load_state_dict(self.policy_net.state_dict())
+        # Target network for DQN: a copy of the policy network, whatever its architecture
+        self.target_net = copy.deepcopy(self.policy_net).to(self.device)
         self.target_net.eval()
         
         # Exploration
@@ -725,7 +721,7 @@ class DQNAgent(BaseRLAgent):
         
         # Target Q values
         with torch.no_grad():
-            if self.config.use_double_dqn:# type: ignore
+            if self.config.double_dqn:# type: ignore
                 # Double DQN: use policy network to select action, target network to evaluate
                 next_actions = self.policy_net(next_states_t).argmax(dim=1, keepdim=True)
                 next_q_values = self.target_net(next_states_t).gather(1, next_actions)
@@ -885,10 +881,12 @@ class PPOAgent(BaseRLAgent):
         self.gamma = config.gamma
         self.lam = config.gae_lambda # getattr(config, "gae_lambda", 0.95)
 
-        # Logged by PPOTrainer after every episode, even before the first train_step
+        # Logged after every episode, even before the first train_step
         self.last_entropy = 0.0
         self.last_policy_loss = 0.0
         self.last_value_loss = 0.0
+        self.last_value = 0.0
+        self.on_episode_start()
 
     def _initialize_networks(self, hidden_dim: int = 128, **kwargs):
         """Initialize policy and value networks if not provided."""
@@ -901,6 +899,57 @@ class PPOAgent(BaseRLAgent):
             self.config.obs_dim,
             hidden_dim=hidden_dim
         )
+
+    # ------------------------------------------------------------
+    # Episode hooks: the episode is kept here and turned into GAE
+    # advantages at its end, then added to the buffer and trained on.
+    # ------------------------------------------------------------
+    train_on_step = False
+
+    def on_episode_start(self):
+        self._episode = {"states": [], "actions": [], "rewards": [], "dones": [], "log_probs": [], "values": []}
+
+    def act(self, state: np.ndarray, training: bool = True) -> int:
+        if not training:
+            return self.select_action(state, training=False)
+        with torch.no_grad():
+            value = self.value_net(self._to_tensor(state)).item() # type: ignore
+        action = self.select_action(state, training=True)
+        self._pending = (float(self.last_log_prob.item()), value)
+        return action
+
+    def observe(self, state, action, reward, next_state, terminated, truncated):
+        log_prob, value = self._pending
+        ep = self._episode
+        ep["states"].append(state)
+        ep["actions"].append(action)
+        ep["rewards"].append(float(reward))
+        ep["dones"].append(terminated) # Truncated episodes bootstrap from the value of the last state
+        ep["log_probs"].append(log_prob)
+        ep["values"].append(value)
+
+    def on_episode_end(self, last_state: np.ndarray) -> Optional[float]:
+        ep = self._episode
+        if not ep["states"]:
+            return None
+        with torch.no_grad():
+            self.last_value = self.value_net(self._to_tensor(last_state)).item() # type: ignore
+
+        advantages, returns = compute_gae(rewards=np.array(ep["rewards"]),
+                                          values=np.array(ep["values"] + [self.last_value]),
+                                          dones=np.array(ep["dones"]),
+                                          gamma=self.gamma, lam=self.lam)
+        states = ep["states"]
+        for t in range(len(states)):
+            next_state = states[t+1] if t < len(states)-1 else last_state
+            self.buffer.add(states[t], ep["actions"][t], ep["rewards"][t], next_state, ep["dones"][t],
+                            ep["log_probs"][t], advantages[t], returns[t])
+        self.on_episode_start()
+        return self.train_step()
+
+    def episode_metrics(self):
+        return {"Agent/Entropy": self.last_entropy, "Agent/Policy/Loss": self.last_policy_loss,
+                "Agent/Value/Loss": self.last_value_loss, "Agent/Value": self.last_value}
 
     def select_action(self, state: np.ndarray, training: bool = True) -> int:
         """Select action from policy distribution (stochastic in training, greedy in eval)."""
@@ -947,7 +996,7 @@ class PPOAgent(BaseRLAgent):
         policy_loss = -torch.min(surr1, surr2).mean()
 
         # value loss
-        values = self.value_net(states_t)
+        values = self.value_net(states_t).squeeze(-1) # (B, 1) -> (B,): without it the loss compared every return with every value
         value_loss = (returns_t - values).pow(2).mean()
 
         loss = policy_loss + self.value_coeff * value_loss - self.entropy_coeff * entropy
@@ -1168,6 +1217,33 @@ class PPOGRUAgent(BaseRLAgent):
     def store_transition(self, state, action, reward, done, log_prob, value):
         self.buffer.append((state, action, reward, done, log_prob, value))
 
+    # ------------------------------------------------------------
+    # Episode hooks: one PPO update per episode
+    # ------------------------------------------------------------
+    train_on_step = False
+
+    def on_episode_start(self):
+        self.reset_hidden()
+
+    def act(self, state, training: bool = True) -> int:
+        if not training:
+            return self.select_action(state, training=False)
+        self._pending_value = self.evaluate_value(state)
+        action = self.select_action(state, training=True)
+        self._pending_log_prob = float(self.last_log_prob.item())
+        return action
+
+    def observe(self, state, action, reward, next_state, terminated, truncated):
+        self.store_transition(state, action, reward, terminated or truncated, self._pending_log_prob, self._pending_value)
+
+    def on_episode_end(self, last_state) -> Optional[float]:
+        return self.train_step() if self.buffer else None
+
+    def episode_metrics(self):
+        return {"Agent/Entropy": self.last_entropy, "Agent/Policy/Loss": self.last_policy_loss,
+                "Agent/Value/Loss": self.last_value_loss, "Agent/Return/Mean": self.last_return,
+                "Agent/Advantage/Mean": self.last_advantage}
+
     def compute_gae(self, last_value: float):
         states, actions, rewards, dones, log_probs, values = zip(*self.buffer)
 
@@ -1308,6 +1384,43 @@ class RecurrentPPOAgent(BaseRLAgent):
 
     def store(self, states, actions, rewards, dones, log_probs, values):#type: ignore
         self.buffer.store_episode(states, actions, rewards, dones, log_probs, values)
+
+    # ------------------------------------------------------------
+    # Episode hooks: the episode is chunked into sequences at its end
+    # ------------------------------------------------------------
+    train_on_step = False
+
+    def on_episode_start(self):
+        self.reset_hidden()
+        self._episode = {"states": [], "actions": [], "rewards": [], "dones": [], "log_probs": [], "values": []}
+
+    def act(self, state, training: bool = True) -> int:
+        action, log_prob, value = self.select_action(state, training=training)
+        if training:
+            self._pending = (log_prob, value)
+        return action
+
+    def observe(self, state, action, reward, next_state, terminated, truncated):
+        log_prob, value = self._pending
+        ep = self._episode
+        ep["states"].append(state)
+        ep["actions"].append(action)
+        ep["rewards"].append(reward)
+        ep["dones"].append(terminated or truncated)
+        ep["log_probs"].append(log_prob)
+        ep["values"].append(value)
+
+    def on_episode_end(self, last_state) -> Optional[float]:
+        ep = self._episode
+        if not ep["states"]:
+            return None
+        self.store(ep["states"], ep["actions"], ep["rewards"], ep["dones"], ep["log_probs"], ep["values"])
+        self._episode = {key: [] for key in ep}
+        return self.train_step()
+
+    def episode_metrics(self):
+        return {"Agent/Entropy": self.last_entropy, "Agent/Policy/Loss": self.last_policy_loss,
+                "Agent/Value/Loss": self.last_value_loss}
 
     def _value_fn(self, state):
         s = self._to_tensor(state).unsqueeze(0).unsqueeze(1)

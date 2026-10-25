@@ -71,13 +71,13 @@ python scripts/inspect_checkpoint.py checkpoints/Test/24/
 
 **Environment** (`grid_env/`): A custom Gymnasium environment built from three composable pieces:
 - `GridMap` — 2D binary occupancy grid loaded from JSON (see `maps/`). Obstacles are `GridObstacle` rectangles.
-- `Robot` (abstract) / `GridRobot` / `GridRobotNotTurning` — manages position and discrete movement on the map.
-- `GridLidar` — GPU-accelerated raycasting sensor that returns `(distance, angle)` pairs. Supports a ray cache for performance.
+- `Robot` (abstract) / `GridRobot` / `GridRobotNotTurning` — manages position and discrete movement on the map; `heading` (0 for robots without orientation) and `random_reset(map, rng)`.
+- `GridLidar` — GPU-accelerated raycasting sensor that returns `(distance, angle)` pairs, angles relative to the robot heading. Supports a ray cache for performance.
 
-`Grid_Robot_Env` (and variants like `Grid_Robot_Sections_Env`) compose these into a Gymnasium env. The observation is the top-N LIDAR readings by distance concatenated with `[dist_to_goal, angle_to_goal]`. The **reward function is passed in at construction time** — there is no hard-coded reward. The contract is in `core/rewards.py`: the env decides the end of the episode (goal → `terminated`; collision or step limit → `truncated`), builds a `StepContext` and calls a `RewardFunction` (e.g. `ProgressReward`), which only scores the step.
+`BaseGridEnv` composes these into a Gymnasium env and holds everything shared (map selection, seeded start/goal sampling, end-of-episode rules, rendering; `reset()` info gives `map`, `optimal_steps`, `dist2goal`). Subclasses only define the observation: `Grid_Robot_Env` (top-N LIDAR readings by distance), `Grid_Robot_Sections_Env` (nearest reading per angular section) and `Grid_Robot_Sections_Env_MultiMap` (sections over several maps), each followed by `[dist_to_goal, angle_to_goal]`. All angles are egocentric (0 = where the robot faces, counter-clockwise). The **reward function is passed in at construction time** — there is no hard-coded reward. The contract is in `core/rewards.py`: the env decides the end of the episode (goal → `terminated`; collision or step limit → `truncated`), builds a `StepContext` and calls a `RewardFunction` (e.g. `ProgressReward`), which only scores the step.
 
 **Agents** (`agents/`): Three-level hierarchy:
-1. `BaseRLAgent` (abstract) — handles device placement, optimizer init, replay buffer, gradient clipping, save/load.
+1. `BaseRLAgent` (abstract) — handles device placement, optimizer init, replay buffer, gradient clipping, save/load, and the episode hooks the trainer uses (`on_episode_start`, `act`, `observe`, `on_episode_end`, `episode_metrics`, `train_on_step`). Defaults are off-policy (replay buffer, train every `eps_step`); the PPO agents keep the episode and train in `on_episode_end`.
 2. Algorithm-specific agents (`GridAgent`, `PPOAgent`, `PPOGRUAgent`, `RecurrentPPOAgent`, `SACDiscreteAgent`, `A2CAgent`, `DQNAgent`) that implement `select_action`, `train_step`, and `_compute_loss`.
 3. `AgentFactory.create_agent(config)` — factory that dispatches on `RLAlgorithm` enum.
 
@@ -91,8 +91,8 @@ Agent configuration uses typed dataclasses in `agents/utils.py`: `RLConfig` (bas
 
 **Training** (`training/TrainingManager.py`):
 - `TrainerConfig` — controls episodes, parallelism, early stopping, render, `eps_step` (train every N steps vs end of episode).
-- `BaseTrainer` — abstract base with `_inner_training` loop. Writes TensorBoard scalars (reward, loss, epsilon, steps ratio vs optimal path, success rate).
-- `MultiEnvironmentTrainer` — concrete trainer; supports cycling through multiple environments. Uses `PathPlanner` (BFS wavefront) to compute the optimal step count per episode for the steps-ratio metric.
+- `BaseTrainer` — holds the **single training loop** for every algorithm (`_train_agent`/`_run_episode`), talking to agents only through their hooks and to envs only through `reset`/`step` info. Same TensorBoard tags for DQN and PPO (`Reward/Total`, `Success/Episode`, `Success/Map/<map>`, `Steps/Ratio/Episode`, `Loss/Episode`, …; list at the top of `TrainingManager.py`) plus `Config/Agent` and `Config/Reward` text.
+- `SingleTrainer` (one agent, one env) and `MultiEnvironmentTrainer` (one agent, several envs; blocks per env or alternating) only decide which env each episode uses. `PPOTrainer`, `PPOGRUTrainer`, `RecurrentPPOTrainer` are deprecated aliases of `SingleTrainer`.
 - Training writes checkpoints to `checkpoints/Test/XX/` and TensorBoard logs to `runs/Test/XX/`.
 
 **Experiment Manager** (`Manager.py`): `RLManager` + `EnvironmentConfig` + `AgentConfig` — a higher-level orchestration layer for running multiple agent×environment combinations. Separate from `TrainingManager`; used when comparing agents or pairing strategies.
@@ -104,21 +104,21 @@ Agent configuration uses typed dataclasses in `agents/utils.py`: `RLConfig` (bas
 These YAML files are not wired into the current training scripts automatically; scripts configure agents inline via dataclasses.
 
 ### Maps (`maps/` and `src/tfm_control_ucm/maps/`)
-JSON files define the grid dimensions and obstacle list. Load with `GridMap.load("path/to/map.json")`. Two maps exist: `map_obstacle_free.json` (empty) and `map_simple.json` (with obstacles).
+JSON files define the grid dimensions and obstacle list. Load with `GridMap.load("path/to/map.json")`. `./maps/` (used by current experiments) has `map_obstacle_free.json`, `map_simple.json`, `map_1_obstacle.json` and `map_4_square_obstacle.json`; `src/tfm_control_ucm/maps/` only has the first two.
 
 ## Key Patterns
 
-**Constructing and running an experiment** (see `train/grid_training_09.py` as the canonical pattern):
+**Constructing and running an experiment** (see `train/grid_training_25.py` as the canonical pattern):
 ```python
-mapa = GridMap.load("./src/tfm_control_ucm/maps/map_obstacle_free.json")
-robot = GridRobot()
-env = Grid_Robot_Sections_Env(map=mapa, robot=robot, cell_size=10)
+mapas = [GridMap.load(p) for p in ["./maps/map_obstacle_free.json", "./maps/map_simple.json"]]
+env = Grid_Robot_Sections_Env_MultiMap(maps=mapas, robot=GridRobotNotTurning(),
+                                       reward_fn=ProgressReward(...), num_sections=8, lidar_config=...)
 
-config = RLConfig(obs_dim=env.get_observation_dim(), action_dim=env.get_action_dim(),
-                  algorithm=RLAlgorithm.GRID_AGENT, device=device, ...)
-agent = GridAgent(config, policy_net=..., target_net=...)
+config = PPOConfig(obs_dim=env.get_observation_dim(), action_dim=env.get_action_dim(),
+                   algorithm=RLAlgorithm.PPO, device=device, ...)
+agent = PPOAgent(config, policy_network=..., value_network=...)
 
-trainer = MultiEnvironmentTrainer("./runs/Test/XX", "./checkpoints/Test/XX", TrainerConfig(...))
+trainer = SingleTrainer("./runs/Test/XX", "./checkpoints/Test/XX", TrainerConfig(...))
 trainer.add_agents(agent).add_environments(env)
 trainer.train()
 ```

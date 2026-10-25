@@ -32,13 +32,24 @@ METRICS = [
 ]
 
 
+# Tags written by the per-algorithm PPO trainers used before test 25
+TAG_ALIASES = {
+    "Reward/Total":        ["Done/Reward/Episode", "Reward/Total/Episode"],
+    "Success/Episode":     ["Done/Success"],
+    "Steps/Ratio/Episode": ["Steps/Ratio"],
+    "Loss/Episode":        ["Agent/Loss", "Agent/Loss/Total", "Policy/Loss"],
+}
+
+
 def load_scalar(run_dir: Path, tag: str) -> list[float] | None:
+    """Values of `tag`, or of its old PPO alias when the run predates the unified trainer."""
     acc = EventAccumulator(str(run_dir))
     acc.Reload()
     tags = acc.Tags().get("scalars", [])
-    if tag not in tags:
+    source = next((t for t in [tag] + TAG_ALIASES.get(tag, []) if t in tags), None)
+    if source is None:
         return None
-    return [e.value for e in acc.Scalars(tag)]
+    return [e.value for e in acc.Scalars(source)]
 
 
 def tail(values: list[float], fraction: float) -> list[float]:

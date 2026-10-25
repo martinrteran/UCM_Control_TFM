@@ -108,7 +108,7 @@ Formal treatment: Murphy 2025 §1.3.4. Practical implication: a recurrent policy
 ```
 Steps_Ratio = actual_steps / optimal_BFS_steps
 ```
-Computed per episode in `BaseTrainer._inner_training()` using `PathPlanner.min_steps()` (wavefront BFS).
+Computed per episode by the environment (`reset()` info `optimal_steps`, `PathPlanner.min_steps()` wavefront BFS) and logged by `BaseTrainer._log_episode()`.
 Equivalent to SPL (Success weighted by Path Length) from Gao et al. 2025, Eq. 7:
 ```
 SPL = (1/N) Σ S_i · p̄_i / max(p_i, p̄_i)

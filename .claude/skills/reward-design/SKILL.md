@@ -13,7 +13,7 @@ Design or refine a reward function for `Grid_Robot_Env` or `Grid_Robot_Sections_
 ## How reward functions work here
 
 Contract lives in `src/tfm_control_ucm/core/rewards.py`. The environment (via
-`RewardedStepMixin._finish_step` in `grid_env/environment.py`) decides the end
+`BaseGridEnv._finish_step` in `grid_env/environment.py`) decides the end
 of the episode **before** calling the reward, then calls
 `reward_fn(ctx: StepContext)`. The reward only scores the step; it never
 returns `terminated`/`truncated`, so the success rate stays comparable across

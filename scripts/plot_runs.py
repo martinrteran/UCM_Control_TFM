@@ -40,15 +40,25 @@ def smooth(values, window):
     return np.convolve(values, kernel, mode="valid")
 
 
+# Tags written by the per-algorithm PPO trainers used before test 25
+TAG_ALIASES = {
+    "Reward/Total":        ["Done/Reward/Episode", "Reward/Total/Episode"],
+    "Success/Episode":     ["Done/Success"],
+    "Steps/Ratio/Episode": ["Steps/Ratio"],
+    "Loss/Episode":        ["Agent/Loss", "Agent/Loss/Total", "Policy/Loss"],
+}
+
+
 def load_run(run_dir: Path) -> dict[str, tuple[list, list]]:
-    """Return {tag: (steps, values)} for each available metric."""
+    """Return {tag: (steps, values)} for each available metric (old PPO tags are read as their aliases)."""
     acc = EventAccumulator(str(run_dir))
     acc.Reload()
     tags = acc.Tags().get("scalars", [])
     result = {}
     for tag in METRICS:
-        if tag in tags:
-            events = acc.Scalars(tag)
+        source = next((t for t in [tag] + TAG_ALIASES.get(tag, []) if t in tags), None)
+        if source:
+            events = acc.Scalars(source)
             steps = [e.step for e in events]
             vals  = [e.value for e in events]
             result[tag] = (steps, vals)

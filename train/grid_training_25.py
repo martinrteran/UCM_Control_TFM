@@ -126,7 +126,7 @@ def main():
         num_episodes=args.num_episodes,
         render=args.render
     )
-    singleTrainer = training_manager.PPOTrainer(logs_dir, f"./checkpoints/Test/{args.test_number}", t_config)
+    singleTrainer = training_manager.SingleTrainer(logs_dir, f"./checkpoints/Test/{args.test_number}", t_config)
     singleTrainer.add_agents(agent)
     singleTrainer.add_environments(env)
 
