@@ -252,7 +252,8 @@ class BaseGridEnv(gym.Env, ABC):
 
         obs = self._get_observation()
         self._start_episode(obs)
-        info = {'map': self.map.name, 'optimal_steps': self._optimal_steps(), 'dist2goal': self._dist_to_goal()}
+        info = {'map': self.map.name, 'optimal_steps': self._optimal_steps(), 'dist2goal': self._dist_to_goal(),
+                'action_mask': self.robot.valid_actions(self.map)}
         if self.curriculum is not None: info['curriculum_stage'] = self.curriculum.stage_idx
 
         return obs, info
@@ -318,7 +319,8 @@ class BaseGridEnv(gym.Env, ABC):
                           previous_geodesic_dist_to_goal=self._previous_geodesic_dist_to_goal)
         reward, components = evaluate_reward(self.reward_fn, ctx)
 
-        info = {'reached_goal': reached_goal, 'hit_obstacle': hit_obstacle, 'max_steps_reached': max_steps_reached,
+        info = {'action_mask': self.robot.valid_actions(self.map), # Valid actions in the new state
+                'reached_goal': reached_goal, 'hit_obstacle': hit_obstacle, 'max_steps_reached': max_steps_reached,
                 'dist2goal': dist_to_goal, 'min_dist': min_obstacle_dist, 'steps': self.steps,
                 'goal_pos': self.goal_pos, 'robot_pos': self.robot.position, 'map': self.map.name,
                 'reward': reward, 'reward_components': components, **summarize_components(components)}

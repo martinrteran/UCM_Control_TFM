@@ -159,6 +159,8 @@ class ReplayBuffer:
             (s, a, r, ns, done)
         or
             (s, a, r, ns, done, log_prob, advantage, return)
+        or
+            (s, a, r, ns, done, log_prob, advantage, return, action_mask)
         """
 
         if len(args) == 5:
@@ -171,8 +173,8 @@ class ReplayBuffer:
                 "done": done,
             }
 
-        elif len(args) == 8:
-            s, a, r, ns, done, logp, adv, ret = args
+        elif len(args) in (8, 9):
+            s, a, r, ns, done, logp, adv, ret = args[:8]
             transition = {
                 "state": s,
                 "action": a,
@@ -183,6 +185,8 @@ class ReplayBuffer:
                 "advantage": adv,
                 "return": ret,
             }
+            if len(args) == 9: # PPO with action masking: valid actions of the state
+                transition["action_mask"] = args[8]
 
         else:
             raise ValueError("ReplayBuffer.add() received an invalid number of arguments")
@@ -214,6 +218,10 @@ class ReplayBuffer:
             log_probs = np.array([b["log_prob"] for b in batch], dtype=np.float32)
             advantages = np.array([b["advantage"] for b in batch], dtype=np.float32)
             returns = np.array([b["return"] for b in batch], dtype=np.float32)
+
+            if "action_mask" in batch[0]:
+                masks = np.array([b["action_mask"] for b in batch], dtype=bool)
+                return (states, actions, rewards, next_states, dones, log_probs, advantages, returns, masks)
 
             return (
                 states,

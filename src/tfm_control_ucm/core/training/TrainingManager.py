@@ -49,6 +49,7 @@ class TrainerConfig:
     num_episodes: int = 100_000 # Total number of episodes to train
     render: bool = False # Whether to render the environment during training (may slow down training)
     log_steps: bool = True # Whether to log the reward components of every step (large event files)
+    action_masking: bool = False # Pass the env's info['action_mask'] to agent.act, so it only picks valid actions
 
 
     # For multi-environment
@@ -65,6 +66,7 @@ class TrainerConfig:
         assert isinstance(self.useTQDM, bool), "useTQDM must be a boolean"
         assert isinstance(self.num_episodes, int) and self.num_episodes > 1_000, "num_episodes must be a positive integer and greater than 1000 for meaningful training"
         assert isinstance(self.log_steps, bool), "log_steps must be a boolean"
+        assert isinstance(self.action_masking, bool), "action_masking must be a boolean"
         assert isinstance(self.onePerEnv, bool), "onePerEnv must be a boolean"
         assert isinstance(self.cyclesPerEnv, int) and self.cyclesPerEnv > 0, "cyclesPerEnv must be a positive integer"
         assert isinstance(self.eps_step, int) and self.eps_step >= 0, "eps_step must be a non-negative integer"
@@ -155,11 +157,13 @@ class BaseTrainer(ABC):
         if self.config.render:
             env.render()
 
+        mask = reset_info.get('action_mask') if self.config.action_masking else None
         while not done:
-            action = agent.act(state, training=True)
+            action = agent.act(state, training=True, action_mask=mask)
             next_state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
             agent.observe(state, action, float(reward), next_state, terminated, truncated)
+            mask = info.get('action_mask') if self.config.action_masking else None
 
             ep_steps += 1
             ep_reward += float(reward)
@@ -244,7 +248,7 @@ class BaseTrainer(ABC):
         Run the agent greedily (no learning) for a number of episodes and print each result.
         """
         for episode in range(num_episodes):
-            state, _ = env.reset()
+            state, info = env.reset()
             agent.on_episode_start()
             done = False
             terminated = False
@@ -252,7 +256,8 @@ class BaseTrainer(ABC):
             ep_reward = 0
 
             while not done:
-                action = agent.act(state, training=False)
+                mask = info.get('action_mask') if self.config.action_masking else None
+                action = agent.act(state, training=False, action_mask=mask)
                 next_state, reward, terminated, truncated, info = env.step(action)
                 done = terminated or truncated
 

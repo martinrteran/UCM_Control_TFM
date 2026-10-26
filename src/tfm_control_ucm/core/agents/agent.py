@@ -907,19 +907,19 @@ class PPOAgent(BaseRLAgent):
     train_on_step = False
 
     def on_episode_start(self):
-        self._episode = {"states": [], "actions": [], "rewards": [], "dones": [], "log_probs": [], "values": []}
+        self._episode = {"states": [], "actions": [], "rewards": [], "dones": [], "log_probs": [], "values": [], "masks": []}
 
-    def act(self, state: np.ndarray, training: bool = True) -> int:
+    def act(self, state: np.ndarray, training: bool = True, action_mask: Optional[np.ndarray] = None) -> int:
         if not training:
-            return self.select_action(state, training=False)
+            return self.select_action(state, training=False, action_mask=action_mask)
         with torch.no_grad():
             value = self.value_net(self._to_tensor(state)).item() # type: ignore
-        action = self.select_action(state, training=True)
-        self._pending = (float(self.last_log_prob.item()), value)
+        action = self.select_action(state, training=True, action_mask=action_mask)
+        self._pending = (float(self.last_log_prob.item()), value, action_mask)
         return action
 
     def observe(self, state, action, reward, next_state, terminated, truncated):
-        log_prob, value = self._pending
+        log_prob, value, mask = self._pending
         ep = self._episode
         ep["states"].append(state)
         ep["actions"].append(action)
@@ -927,6 +927,7 @@ class PPOAgent(BaseRLAgent):
         ep["dones"].append(terminated) # Truncated episodes bootstrap from the value of the last state
         ep["log_probs"].append(log_prob)
         ep["values"].append(value)
+        ep["masks"].append(mask)
 
     def on_episode_end(self, last_state: np.ndarray) -> Optional[float]:
         ep = self._episode
@@ -940,23 +941,35 @@ class PPOAgent(BaseRLAgent):
                                           dones=np.array(ep["dones"]),
                                           gamma=self.gamma, lam=self.lam)
         states = ep["states"]
+        masked = all(m is not None for m in ep["masks"])
         for t in range(len(states)):
             next_state = states[t+1] if t < len(states)-1 else last_state
-            self.buffer.add(states[t], ep["actions"][t], ep["rewards"][t], next_state, ep["dones"][t],
-                            ep["log_probs"][t], advantages[t], returns[t])
+            transition = (states[t], ep["actions"][t], ep["rewards"][t], next_state, ep["dones"][t],
+                          ep["log_probs"][t], advantages[t], returns[t])
+            if masked:
+                self.buffer.add(*transition, ep["masks"][t])
+            else:
+                self.buffer.add(*transition)
         self.on_episode_start()
         return self.train_step()
+
+    def _mask_logits(self, logits: torch.Tensor, action_mask) -> torch.Tensor:
+        """Give invalid actions (mask False) a probability of ~0; no-op without a mask."""
+        if action_mask is None:
+            return logits
+        mask_t = torch.as_tensor(np.asarray(action_mask), dtype=torch.bool, device=logits.device)
+        return logits.masked_fill(~mask_t, -1e9)
 
     def episode_metrics(self):
         return {"Agent/Entropy": self.last_entropy, "Agent/Policy/Loss": self.last_policy_loss,
                 "Agent/Value/Loss": self.last_value_loss, "Agent/Value": self.last_value}
 
-    def select_action(self, state: np.ndarray, training: bool = True) -> int:
-        """Select action from policy distribution (stochastic in training, greedy in eval)."""
+    def select_action(self, state: np.ndarray, training: bool = True, action_mask: Optional[np.ndarray] = None) -> int:
+        """Select action from policy distribution (stochastic in training, greedy in eval), among the valid actions if masked."""
         self.global_step += 1
 
         state_t = self._to_tensor(state).unsqueeze(0)
-        logits_or_probs = self.policy_net(state_t)
+        logits_or_probs = self._mask_logits(self.policy_net(state_t), action_mask)
 
         # Asumiendo que PolicyNetwork devuelve logits; si devuelve probs, cambia a probs=...
         dist = torch.distributions.Categorical(logits=logits_or_probs)
@@ -973,10 +986,12 @@ class PPOAgent(BaseRLAgent):
     def _compute_loss(self, batch: Tuple) -> torch.Tensor:
         """
         Compute PPO loss from batch:
-        batch = (states, actions, rewards, next_states, dones, old_log_probs, advantages, returns)
+        batch = (states, actions, rewards, next_states, dones, old_log_probs, advantages, returns[, action_masks])
+        With action masks the log-probabilities and entropy are those of the masked policy that acted.
         """
         (states, actions, rewards, next_states,
-         dones, old_log_probs, advantages, returns) = batch
+         dones, old_log_probs, advantages, returns) = batch[:8]
+        action_masks = batch[8] if len(batch) > 8 else None
 
         states_t = self._to_tensor(states)
         actions_t = self._to_tensor(actions, dtype=torch.int64)
@@ -984,7 +999,7 @@ class PPOAgent(BaseRLAgent):
         advantages_t = self._to_tensor(advantages)
         returns_t = self._to_tensor(returns)
 
-        logits_or_probs = self.policy_net(states_t)
+        logits_or_probs = self._mask_logits(self.policy_net(states_t), action_masks)
         dist = torch.distributions.Categorical(logits=logits_or_probs)
         log_probs = dist.log_prob(actions_t)
         entropy = dist.entropy().mean()
@@ -1225,7 +1240,9 @@ class PPOGRUAgent(BaseRLAgent):
     def on_episode_start(self):
         self.reset_hidden()
 
-    def act(self, state, training: bool = True) -> int:
+    def act(self, state, training: bool = True, action_mask=None) -> int:
+        if action_mask is not None:
+            raise NotImplementedError(f"{type(self).__name__} does not support action masking")
         if not training:
             return self.select_action(state, training=False)
         self._pending_value = self.evaluate_value(state)
@@ -1395,7 +1412,9 @@ class RecurrentPPOAgent(BaseRLAgent):
         self.reset_hidden()
         self._episode = {"states": [], "actions": [], "rewards": [], "dones": [], "log_probs": [], "values": []}
 
-    def act(self, state, training: bool = True) -> int:
+    def act(self, state, training: bool = True, action_mask=None) -> int:
+        if action_mask is not None:
+            raise NotImplementedError(f"{type(self).__name__} does not support action masking")
         action, log_prob, value = self.select_action(state, training=training)
         if training:
             self._pending = (log_prob, value)

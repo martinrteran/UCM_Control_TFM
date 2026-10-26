@@ -154,21 +154,20 @@ def build_env(args, obs_dim: int, action_dim: int, run_config: Optional[dict]):
     return env
 
 
-def run_eval(agent, env, num_episodes: int, render: bool, seed: Optional[int]):
+def run_eval(agent, env, num_episodes: int, render: bool, seed: Optional[int], action_masking: bool = False):
     records = []
     for ep in range(num_episodes):
-        state, _ = env.reset(seed=seed if ep == 0 else None)
+        state, info = env.reset(seed=seed if ep == 0 else None)
         agent.on_episode_start()
         map_name = env.map.name
         done = False
         ep_reward = 0.0
         ep_steps  = 0
-        info = {}
 
         while not done:
             if render:
                 env.render()
-            action = agent.act(state, training=False)
+            action = agent.act(state, training=False, action_mask=info.get("action_mask") if action_masking else None)
             state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
             ep_reward += reward
@@ -243,7 +242,9 @@ def main():
     env = build_env(args, obs_dim, action_dim, run_config)
 
     print(f"\nRunning {args.episodes} evaluation episode(s)...\n")
-    run_eval(agent, env, args.episodes, args.render, args.seed)
+    action_masking = bool(run_config and run_config.get("action_masking", False))
+    print(f"[eval] action_masking={action_masking}")
+    run_eval(agent, env, args.episodes, args.render, args.seed, action_masking)
     env.close()
 
 

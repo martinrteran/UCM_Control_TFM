@@ -32,6 +32,8 @@ Analyze the results of a training run from this project.
 
 ## Useful scripts
 
+**Preferred (test 25+):** `python scripts/analyze_tests.py <ref> <N> [...] --labels ... --out plots/compare_...` exports the CSV, evaluates greedy + sampled with the same seed (cached in `plots/evals/`), plots, and writes `summary.md` with z-tests against the first test. Event files of runs with per-step logging (test 25: 1.9 GB) are slow to load; always go through `runs/Test/<N>/episodes.csv`.
+
 ```bash
 python scripts/plot_runs.py {N}           # visualise all metrics for one run
 python scripts/compare_runs.py {N} {M}   # side-by-side stats table

@@ -23,8 +23,8 @@ does not change the final agent; map_simple (~78 %) and greedy loops remain the 
 Tests 26-30 trained: curriculum, geodesic reward, GRU memory (28; fixed in 29) and a 30-cell lidar
 all leave map_simple at ~78 % (every goal is reachable). Test 25 is still the best agent. Its map_simple
 collisions (sampled) all happen with the lidar reporting the obstacle 1 cell away in the move direction:
-residual policy noise near walls, not perception; greedy turns them into loops. Next idea: invalid-action
-masking.
+residual policy noise near walls, not perception; greedy turns them into loops. Test 31 (invalid-action
+masking) is ready to train.
 
 ---
 
@@ -101,6 +101,15 @@ uniform among them) and the start-goal distance, and `_finish_step` reports each
 the stage reaches its threshold (after `min_episodes`), or after `max_episodes`. Trainer and agents don't know
 about it; the trainer logs `Curriculum/Stage` and `Config/Curriculum` if the env has one.
 
+### 2a-ter. Action masking
+
+`Robot.valid_actions(map)` (bool per action: `GridRobotNotTurning` = target cell free; `GridRobot` = front
+free, turns always valid). Every env `reset`/`step` info has `action_mask`. With
+`TrainerConfig(action_masking=True)` the trainer passes it to `agent.act(..., action_mask=...)`; only
+`PPOAgent` supports it (masked logits when acting, mask stored as a 9th buffer field and applied in
+`_compute_loss`); other agents raise `NotImplementedError`. `eval_agent.py` applies it when the run's
+`config.json` has `"action_masking": true`.
+
 ### 2b. Train/eval scripts
 
 - `train/grid_training_25.py` — **the working script**. Same setup as 24 (PPO,
@@ -173,7 +182,7 @@ obstacles (14, overlapping: 121 occupied cells).
 
 ### 2g. Tests and bug fixes (decoupling phases 0–4)
 
-`pytest` (from the repo root, ~15 s) runs 106 tests in `tests/`
+`pytest` (from the repo root, ~15 s) runs 113 tests in `tests/`
 (`test_map`, `test_robot`, `test_environment`, `test_rewards`, `test_heading`,
 `test_training`, `test_scripts`, `test_curriculum`). `matplotlib` and `pandas` are installed in `.venv` (not in
 `requirements.txt`). They build tiny
@@ -199,6 +208,31 @@ Bugs fixed (each reproduced by a test first):
 
 Still open: `GridAgent_2_FIXED`, the commented-out `Grid_Robot_Env_Image_lidar`
 and other commented-out code (phase 5).
+
+### 2h. How to analyse a finished run (test 31 is training now)
+
+Test 31 was launched on 2026-10-26 in the background (`logs/test31_train.err` shows the tqdm progress; the
+checkpoint is written only at the end, to `checkpoints/Test/31/PPO Agent/final.pth`). When it finishes:
+
+```bash
+# Everything in one command: exports the CSV, evaluates greedy + sampled (1000 episodes, seed 0),
+# plots and writes summary.md with z-tests against the first test (|z| > 1.96 ~ significant at 5 %).
+python scripts/analyze_tests.py 25 31 --labels "25 base" "31 masking" --out plots/compare_25_31
+
+# More tests in one comparison (evaluations of 25-30 are cached in plots/evals/, so only 31 is evaluated)
+python scripts/analyze_tests.py 25 29 30 31 --labels "25 base" "29 GRU" "30 lidar 30" "31 masking"
+```
+
+Pieces, if needed on their own:
+- `scripts/export_episode_metrics.py "runs/Test/31/PPO Agent"` → `runs/Test/31/episodes.csv` (one pass over the event file).
+- `scripts/eval_policy_modes.py 31` → `plots/evals/eval_31_e1000_s0.json` (greedy vs sampled, per map, loops, path ratio;
+  applies action masking when `config.json` has it). ~20–40 min for 1000 episodes x 2 modes.
+- `scripts/plot_episode_csv.py runs/Test/31/episodes.csv --out plots/test31` → single-run plots + `summary_by_phase.csv`.
+- `scripts/compare_episode_csv.py <csv...> --labels ... --out ...` → comparison plots + phase table.
+- `scripts/eval_agent.py "checkpoints/Test/31/PPO Agent/final.pth" --episodes 100` → per-episode printout.
+
+What to look at for test 31: collisions should be 0 in both modes; whether success on map_simple goes above
+~78 %; whether greedy timeouts (loops) grow, since masking removes collisions but not loops.
 
 ---
 
@@ -227,6 +261,7 @@ a given run. Summary from commit messages + script contents:
 | 28 | Test 25 with `RecurrentPPOAgent` (GRU hidden 40, `seq_len` 32), same reward as 25, `log_steps=False`, seed 0; 4 h 37 min | all 4 maps | not committed yet | **Worse and unstable: collapsed from ~90 % to ~25 % success around episode 25k for ~7k episodes, then recovered. Eval: sampled 85.2 %, greedy 77.4 % (224 loops), map_simple ~60 %. RecurrentPPOAgent (and PPOGRUAgent) never clip gradients (`max_grad_norm` ignored) — likely cause; not a fair verdict on memory.** |
 | 29 | Test 28 with the recurrent training fixed (gradient clipping and padding mask in `RecurrentPPOAgent.train_step`) and lr 3e-4; seed 0; 2 h 51 min | all 4 maps | not committed yet | **Stable (no collapse), but still below the MLP: eval 1000 eps sampled 89.8 % (25: 93.9 %, z = -3.4), greedy 88.3 % (z = -2.1); map_simple ~70 %. Near-deterministic (entropy 0.27), successful paths optimal (median ratio 1.00), but 95-111 loops in both modes: memory as implemented does not remove loops.** Plots: `plots/compare_25_29_30/` |
 | 30 | Test 25 with a 30-cell lidar (was 10; safety margin kept at 6.67 cells), `log_steps=False`, seed 0; 2 h 41 min | all 4 maps | not committed yet | **Same as 25: sampled 93.7 % (z = -0.2), greedy 90.4 % (z = -0.5), map_simple 79.4 % (n.s.). Perception range is not the bottleneck.** |
+| 31 | Test 25 with invalid-action masking (`TrainerConfig(action_masking=True)`: PPO samples only among `info["action_mask"]` = `Robot.valid_actions(map)`, acting and learning with the masked policy), `log_steps=False`, seed 0 | all 4 maps | not committed yet | **ready, not trained** (40-episode smoke test: 0 collisions). Isolates loops / local minima |
 
 Test 25 takeaway: success climbs to ~83 % in 4k episodes and to 93 % by 40k, still rising (entropy 0.55 nats
 at the end, map_simple still improving). Successful paths are near-optimal (median steps/BFS 1.08). Failures:

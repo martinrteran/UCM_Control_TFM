@@ -187,14 +187,17 @@ class BaseRLAgent(ABC):
         """Called after env.reset(), before the first action (e.g. reset recurrent state)."""
         pass
 
-    def act(self, state: np.ndarray, training: bool = True) -> int:
+    def act(self, state: np.ndarray, training: bool = True, action_mask: Optional[np.ndarray] = None) -> int:
         """
         Action to take in `state`.
 
         With training=True the agent may record what it needs to learn from this
         step (log-probabilities, values...); with training=False it acts greedily
-        and records nothing.
+        and records nothing. `action_mask` (bool per action, True = valid) restricts
+        the choice to valid actions; only agents that override act support it.
         """
+        if action_mask is not None:
+            raise NotImplementedError(f"{type(self).__name__} does not support action masking")
         return int(self.select_action(state, training=training)) # type: ignore
 
     def observe(self, state: np.ndarray, action: int, reward: float, next_state: np.ndarray,

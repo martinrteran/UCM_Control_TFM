@@ -86,6 +86,23 @@ class Robot(ABC):
                 return
 
     @abstractmethod
+    def valid_actions(self, map: GridMap) -> np.ndarray:
+        """
+        Actions that would not end in a collision from the current state.
+
+        Parameters
+        ----------
+        map : GridMap
+            The environment map.
+
+        Returns
+        -------
+        np.ndarray
+            Boolean array of length NUM_ACTIONS; True where the action is valid.
+        """
+        raise NotImplementedError("This method should be implemented by subclasses.")
+
+    @abstractmethod
     def move(self, map: GridMap, direction: Any) -> bool:
         """
         Execute a movement step within the given map.
@@ -209,6 +226,12 @@ class GridRobot(Robot):
 
         return moved  # collision
 
+    def valid_actions(self, map: GridMap) -> np.ndarray:
+        """Turning is always valid; moving forward only if the cell in front is free."""
+        dc, dr = self.orientation.get_value()
+        c, r = self.position
+        return np.array([map.is_free(r + dr, c + dc), True, True])
+
     # ------------------------------------------------------------
     # Movement
     # ------------------------------------------------------------
@@ -279,7 +302,12 @@ class GridRobotNotTurning(Robot):
     s_directions = list(Direction.__members__.values())
     s_dirs_pos = [dir.value for dir in s_directions]
     s_dirs_names = list(Direction.__members__.keys())
-    
+
+    def valid_actions(self, map: GridMap) -> np.ndarray:
+        """A move is valid if the target cell is inside the map and free."""
+        c, r = self.position
+        return np.array([map.is_free(r + dr, c + dc) for dc, dr in self.s_dirs_pos])
+
     # ------------------------------------------------------------
     # Movement
     # ------------------------------------------------------------
