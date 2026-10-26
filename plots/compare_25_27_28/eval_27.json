@@ -1,0 +1,60 @@
+{
+  "greedy": {
+    "per_map": {
+      "simple_map": {
+        "timeout": 73,
+        "success": 162,
+        "collision": 13
+      },
+      "obstacle_free_map": {
+        "success": 259,
+        "timeout": 8
+      },
+      "4_obstacles": {
+        "success": 225,
+        "timeout": 30
+      },
+      "1_obstacle": {
+        "success": 204,
+        "timeout": 26
+      }
+    },
+    "steps_ratio_median": {
+      "obstacle_free_map": 1.0,
+      "4_obstacles": 1.0,
+      "1_obstacle": 1.0,
+      "simple_map": 1.0
+    },
+    "timeout_loops": 137
+  },
+  "sampled": {
+    "per_map": {
+      "simple_map": {
+        "collision": 39,
+        "success": 195,
+        "timeout": 14
+      },
+      "obstacle_free_map": {
+        "success": 266,
+        "collision": 1
+      },
+      "4_obstacles": {
+        "success": 247,
+        "timeout": 2,
+        "collision": 6
+      },
+      "1_obstacle": {
+        "success": 226,
+        "timeout": 2,
+        "collision": 2
+      }
+    },
+    "steps_ratio_median": {
+      "obstacle_free_map": 1.0666666666666667,
+      "4_obstacles": 1.1363636363636365,
+      "1_obstacle": 1.1106578276389598,
+      "simple_map": 1.1666666666666667
+    },
+    "timeout_loops": 15
+  }
+}
