@@ -1,0 +1,56 @@
+{
+  "script": "grid_training_30.py",
+  "args": {
+    "progress_scale": 10.0,
+    "clip_negative_progress": true,
+    "step_penalty": 0.05,
+    "max_proximity_penalty": 0.01,
+    "safety_margin": 6.666666666666667,
+    "goal_reward": 20.0,
+    "collision_penalty": 5.0,
+    "n": 2,
+    "lidar_range": 30,
+    "max_steps": 400,
+    "lr": 0.001,
+    "buffer_size": 100000,
+    "batch_size": 64,
+    "max_grad_norm": 5.0,
+    "clip_eps": 0.2,
+    "entropy_coeff": 0.01,
+    "value_coeff": 0.5,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "num_episodes": 40000,
+    "agent_name": "PPO Agent",
+    "render": false,
+    "seed": 0,
+    "test_number": 30
+  },
+  "reward": {
+    "name": "ProgressReward",
+    "progress_scale": 10.0,
+    "clip_negative_progress": true,
+    "step_penalty": 0.05,
+    "safety_margin": 6.666666666666667,
+    "max_proximity_penalty": 0.01,
+    "goal_reward": 20.0,
+    "collision_penalty": 5.0,
+    "distance": "euclidean"
+  },
+  "maps": [
+    "./maps/map_obstacle_free.json",
+    "./maps/map_1_obstacle.json",
+    "./maps/map_4_square_obstacle.json",
+    "./maps/map_simple.json"
+  ],
+  "random_map": true,
+  "robot": "GridRobotNotTurning",
+  "lidar": {
+    "num_rays": 120,
+    "max_range": 30,
+    "fov": 6.283185307179586,
+    "noise_std": 0.001,
+    "with_cache": true
+  },
+  "num_sections": 8
+}
