@@ -38,3 +38,21 @@ def test_plot_runs_reads_old_ppo_tags(tmp_path):
     data = plot_runs.load_run(tmp_path)
     assert data["Success/Episode"][1] == [0.0, 1.0, 0.0]
     assert data["Reward/Total"][1] == [-1.0, -1.0, -1.0]
+
+
+def test_eval_agent_loads_recurrent_checkpoints(tmp_path):
+    import torch
+    from tfm_control_ucm.core.agents.agent import RecurrentPPOAgent
+    from tfm_control_ucm.core.agents.networks import RecurrentGRUPolicy, RecurrentGRUValue
+    from tfm_control_ucm.core.agents.utils import PPORNNConfig, RLAlgorithm
+
+    config = PPORNNConfig(name="gru", obs_dim=18, action_dim=4, algorithm=RLAlgorithm.PPO, device="cpu", seq_len=8)
+    agent = RecurrentPPOAgent(config, RecurrentGRUPolicy(18, 12, 4), RecurrentGRUValue(18, 12))
+    agent.save(str(tmp_path / "final.pth"))
+
+    eval_agent = load_script("eval_agent")
+    loaded, obs_dim, action_dim = eval_agent.load_agent_from_checkpoint(str(tmp_path / "final.pth"), torch.device("cpu"))
+    assert isinstance(loaded, RecurrentPPOAgent) and (obs_dim, action_dim) == (18, 4)
+    assert loaded.policy_net.hidden_dim == 12
+    loaded.on_episode_start()
+    assert 0 <= loaded.act(torch.zeros(18).numpy(), training=False) < 4

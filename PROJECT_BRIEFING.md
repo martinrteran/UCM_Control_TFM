@@ -18,7 +18,10 @@
 Phases 0 (tests), 1 (bug fixes), 2 (reward contract + `grid_training_25.py`),
 3 (`BaseGridEnv`, egocentric observation) and 4 (one training loop with agent
 hooks) are done and pushed. Left: phase 5 (delete commented-out code, legacy
-classes and copy scripts). **Next experiment: train test 25.**
+classes and copy scripts). Tests 25 and 26 trained (§3): the curriculum speeds up early learning but
+does not change the final agent; map_simple (~78 %) and greedy loops remain the open problems.
+Tests 27 (geodesic reward) and 28 (GRU) trained: neither improves map_simple (~78 %, every goal
+is reachable). 28 is unstable (no gradient clipping in the recurrent agents).
 
 ---
 
@@ -58,13 +61,16 @@ rules moved into the env, and every algorithm now logs the same tags.
 - `StepContext` (frozen dataclass): action, previous_action, obs, previous_obs,
   `dist_to_goal`, `previous_dist_to_goal`, `min_obstacle_dist`, `hit_obstacle`,
   `reached_goal`, `max_steps_reached`, steps, max_steps, robot_pos, goal_pos,
-  map_diagonal, lidar_max_range. Rewards never parse `obs` indices.
+  map_diagonal, lidar_max_range, `geodesic_dist_to_goal`, `previous_geodesic_dist_to_goal` (BFS distance
+  around obstacles, from the goal distance field the env computes once per reset; inf if unreachable).
+  Rewards never parse `obs` indices.
 - `RewardFunction` (ABC): `__call__(ctx) -> RewardResult(reward, components)`;
   dataclass subclasses get `get_config()` (name + params) for experiment logs.
   Plain callables also accepted (may return a float or `(reward, components)`).
 - `ProgressReward`: progress `progress_scale*(prev−dist)/diag` (optionally
   clipped at 0), `−step_penalty`, linear proximity penalty below
-  `safety_margin`, `+goal_reward`, `−collision_penalty`. Defaults = the
+  `safety_margin`, `+goal_reward`, `−collision_penalty`; `distance="euclidean"|"geodesic"` picks the
+  distance of the progress term (geodesic falls back to Euclidean if unreachable). Defaults = the
   `grid_training_10 copy.py` reward; `clip_negative_progress=True` = the
   pre-refactor MultiMap reward.
 
@@ -83,6 +89,15 @@ bootstraps from the value of the state where the robot stopped. Also,
 past episodes (stale log-probs and advantages) instead of updating on the
 latest rollout — closer to off-policy than textbook PPO.
 
+### 2a-bis. Curriculum (`core/curriculum.py`)
+
+`SuccessCurriculum(stages, window)` with `CurriculumStage(maps, max_goal_distance, success_threshold, min_episodes, max_episodes)`.
+The **environment owns it** (`BaseGridEnv(curriculum=...)`): the current stage limits the maps (by `GridMap.name`,
+uniform among them) and the start-goal distance, and `_finish_step` reports each episode's outcome
+(`curriculum.record(reached_goal)`). The stage advances when the success rate over the last `window` episodes of
+the stage reaches its threshold (after `min_episodes`), or after `max_episodes`. Trainer and agents don't know
+about it; the trainer logs `Curriculum/Stage` and `Config/Curriculum` if the env has one.
+
 ### 2b. Train/eval scripts
 
 - `train/grid_training_25.py` — **the working script**. Same setup as 24 (PPO,
@@ -90,6 +105,11 @@ latest rollout — closer to off-policy than textbook PPO.
   `--seed`, `--render/--no-render`, `SingleTrainer`, and writes the full config
   (args, reward params, maps, lidar) to `runs/Test/<N>/config.json`.
   Smoke-tested for 8 episodes; not trained yet.
+- `train/grid_training_26.py` — test 25 + curriculum + `TrainerConfig(log_steps=False)`; curriculum CLI args
+  `--curriculum_window`, `--stage_threshold`, `--stage_min_episodes`, `--stage_max_episodes`; `config.json` includes
+  the curriculum.
+- `train/grid_training_27.py` (geodesic progress, `--progress_distance`) and `train/grid_training_28.py`
+  (`RecurrentPPOAgent`, `--hidden_dim`, `--seq_len`) — both test 25 + one change, `log_steps=False`.
 - `train/grid_training_22.py`–`_24.py` and the `* copy.py` scripts use the old
   11-positional-arg reward or no reward at all and fail at env construction.
   **Kept broken on purpose** (historical record, see convention above).
@@ -98,7 +118,7 @@ latest rollout — closer to off-policy than textbook PPO.
   any MLP policy from the state_dict shapes, uses the agent hooks, and reports
   success/collision/timeout overall and per map. Runs without `config.json`
   are evaluated with `_legacy_goal_angle` (test 22 on `map_4_square_obstacle`:
-  80 % success with it, 0 % without). Recurrent agents not supported.
+  80 % success with it, 0 % without). GRU checkpoints (`gru.*` weights) load as `RecurrentPPOAgent`.
 - `scripts/plot_runs.py` / `compare_runs.py` read the unified tags and fall back
   to the old PPO tags (`Done/Success`, `Steps/Ratio`, `Done/Reward/Episode`…).
   `matplotlib` is not installed in `.venv`. `compare_runs.py 22` takes more
@@ -150,9 +170,10 @@ obstacles (14, overlapping: 121 occupied cells).
 
 ### 2g. Tests and bug fixes (decoupling phases 0–4)
 
-`pytest` (from the repo root, ~10 s) runs 84 tests in `tests/`
+`pytest` (from the repo root, ~15 s) runs 104 tests in `tests/`
 (`test_map`, `test_robot`, `test_environment`, `test_rewards`, `test_heading`,
-`test_training`, `test_scripts`; 1 skipped without `matplotlib`). They build tiny
+`test_training`, `test_scripts`, `test_curriculum`). `matplotlib` and `pandas` are installed in `.venv` (not in
+`requirements.txt`). They build tiny
 maps and inject their own reward, so they don't depend on any train script.
 
 Bugs fixed (each reproduced by a test first):
@@ -197,7 +218,18 @@ a given run. Summary from commit messages + script contents:
 | 22 | PPO, `Grid_Robot_Sections_Env`, `n_sections=8` | `map_4_square_obstacle` | "Test 22 - no improvement" | plateaued |
 | 23 | PPO, same env/config as 22 | `map_4_square_obstacle` | "Test 23 - Before Training" | **committed before training ran** — likely never executed to completion (no `runs/Test/23` on disk) |
 | 24 | PPO, `Grid_Robot_Sections_Env_MultiMap` (4 maps, random per episode), `n`/CLI-args via `argparse` | all 4 maps | "Teest 24 - Sim 23 - Change Name Maps" | **never ran**; kept as history (no `reward_fn`) |
-| 25 | Same as 24 on the decoupled API: `ProgressReward(clip_negative_progress=True)`, env decides episode end, egocentric angles, fixed PPO critic, unified trainer, `config.json` per run | all 4 maps | "Test 25 - Decoupled reward, bug fixes and unit tests" (+ phases 3–4) | **ready, not trained** (8-episode smoke test only) |
+| 25 | Same as 24 on the decoupled API: `ProgressReward(clip_negative_progress=True)`, env decides episode end, egocentric angles, fixed PPO critic, unified trainer, seed 0, 40k episodes (5 h 49 min, GPU) | all 4 maps | "Test 25 - Decoupled reward, bug fixes and unit tests" (+ phases 3–4) | **success 93 % in the last 8k training episodes; eval 400 eps: greedy 90 %, sampled 94 %. map_simple is the weak map (~78 %)**. Plots and phase table in `plots/test25/` |
+| 26 | Test 25 + `SuccessCurriculum` (5 stages: empty map, goals <= 20 -> + 1_obstacle, <= 30 -> + 4_obstacles -> + simple_map, <= 30 -> all maps, any distance = test 25's setting; 0.90/0.85 success over 500 episodes, min 500 / max 6000 per stage), `log_steps=False`, seed 0; 40k episodes in 3 h 18 min | all 4 maps | not committed yet | **stages started at episodes 0/1620/2120/3416/3916. Reaches 80 % success with ~half the environment steps of test 25, but the final agent is the same: eval 1000 eps sampled 93.9 % (25: 93.9 %), greedy 89.3 % (25: 91.1 %, n.s.), map_simple 77.8 % in both.** Plots: `plots/compare_25_26/` |
+| 27 | Test 25 with `ProgressReward(distance="geodesic")` (progress along the BFS shortest path), `log_steps=False`, no curriculum, seed 0; 2 h 52 min | all 4 maps | not committed yet | **No gain. Eval 1000 eps: sampled 93.4 % (25: 93.9 %, n.s.), map_simple 78.6 % (25: 77.8 %, n.s.); greedy worse, 85.0 % vs 91.1 % (z = -4.2), 137 loops vs 76.** Plots: `plots/compare_25_27_28/` |
+| 28 | Test 25 with `RecurrentPPOAgent` (GRU hidden 40, `seq_len` 32), same reward as 25, `log_steps=False`, seed 0; 4 h 37 min | all 4 maps | not committed yet | **Worse and unstable: collapsed from ~90 % to ~25 % success around episode 25k for ~7k episodes, then recovered. Eval: sampled 85.2 %, greedy 77.4 % (224 loops), map_simple ~60 %. RecurrentPPOAgent (and PPOGRUAgent) never clip gradients (`max_grad_norm` ignored) — likely cause; not a fair verdict on memory.** |
+
+Test 25 takeaway: success climbs to ~83 % in 4k episodes and to 93 % by 40k, still rising (entropy 0.55 nats
+at the end, map_simple still improving). Successful paths are near-optimal (median steps/BFS 1.08). Failures:
+the greedy policy loops (35 of its 36 timeouts revisit one cell >= 20 times; sampling actions removes them,
+4_obstacles goes 89 % -> 100 %), and map_simple (walls forming a pocket that needs a detour away from the
+goal) stays at ~78 % with either policy — the local-minimum failure mode of Gao et al. 2025. The event file
+is 1.9 GB because of per-step logging (`TrainerConfig.log_steps`); `scripts/export_episode_metrics.py` +
+`scripts/plot_episode_csv.py` analyse it from a CSV.
 
 Takeaway: the sequence-chunked recurrent buffer (test 21 GRU_RNN) is the only
 GRU-based success so far; the project was moving toward multi-map

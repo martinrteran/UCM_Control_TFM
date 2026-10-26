@@ -29,6 +29,7 @@ ctx.action, ctx.previous_action        # int (-1 on the first step)
 ctx.obs, ctx.previous_obs              # raw observations
 ctx.dist_to_goal, ctx.previous_dist_to_goal
 ctx.min_obstacle_dist                  # nearest lidar reading (lidar_max_range if none)
+ctx.geodesic_dist_to_goal, ctx.previous_geodesic_dist_to_goal  # BFS distance around obstacles (inf if unreachable)
 ctx.hit_obstacle, ctx.reached_goal, ctx.max_steps_reached
 ctx.steps, ctx.max_steps
 ctx.robot_pos, ctx.goal_pos            # (col, row)
@@ -43,7 +44,8 @@ float or `(total, components)`. The env puts `components` in
 `Info/Reward/Components/*`.
 
 `ProgressReward` (in `rewards.py`) is the current reward: progress shaping
-(optionally clipped at 0), step cost, linear proximity penalty, +goal, −collision.
+(optionally clipped at 0), step cost, linear proximity penalty, +goal, −collision;
+`distance="geodesic"` measures progress along the BFS shortest path (test 27).
 Tests for rewards are in `tests/test_rewards.py`.
 
 ## Design principles for this environment

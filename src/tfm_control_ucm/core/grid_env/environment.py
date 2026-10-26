@@ -32,6 +32,7 @@ from tensordict import TensorDict
 
 from tfm_control_ucm.renderers.grid_renderer import PygameRenderer, PygameRenderer_Image_Lidar
 from tfm_control_ucm.core.rewards import RewardCallable, StepContext, evaluate_reward, summarize_components
+from tfm_control_ucm.core.curriculum import SuccessCurriculum
 from tfm_control_ucm.utils.path_planner import PathPlanner
 
 def _wrap_angle(angle):
@@ -73,6 +74,10 @@ class BaseGridEnv(gym.Env, ABC):
     random_map : bool, optional
         Pick the map uniformly at random at each reset (seeded through reset(seed=...)),
         or cycle through the maps in order when False.
+    curriculum : SuccessCurriculum, optional
+        If given, its current stage limits the maps (picked at random among the
+        stage's) and the start-goal distance, and it is told the outcome of every
+        episode. info['curriculum_stage'] reports the stage.
     """
     metadata = {"render_modes": ["human"], "render_fps": 10}
     _min_num_rays = 8
@@ -92,7 +97,8 @@ class BaseGridEnv(gym.Env, ABC):
                 max_iteration_steps: Union[int,np.integer] = 10_000,
                 render_mode: Optional[str] = None,
                 cell_size: int = 32,
-                random_map: bool = True
+                random_map: bool = True,
+                curriculum: Optional[SuccessCurriculum] = None
                 ) -> None:
         if not isinstance(maps, Iterable): raise TypeError("The maps must be an iterable of GridMap instances")
         maps = list(maps)
@@ -101,12 +107,14 @@ class BaseGridEnv(gym.Env, ABC):
         if not isinstance(robot, Robot): raise TypeError("The robot must be of type Robot")
         if not callable(reward_fn): raise TypeError("The reward_fn must be a RewardFunction or a callable taking a StepContext")
         self._check_lidar_config(lidar_config)
+        if curriculum is not None: curriculum.check_maps([m.name for m in maps])
 
         super().__init__()
         self.maps = maps
         self.map = maps[0] # Placeholder until the first reset selects one
         self._random_map = random_map
         self._map_idx: Optional[int] = None
+        self.curriculum = curriculum
         self.robot = robot
         self.reward_fn = reward_fn
         self.lidar = GridLidar(**lidar_config) if lidar_config else self._default_lidar()
@@ -126,6 +134,8 @@ class BaseGridEnv(gym.Env, ABC):
         self._previous_action = -1 # Do nothing
         self._previous_obs = None
         self._previous_dist_to_goal = 0.0
+        self._previous_geodesic_dist_to_goal = float("inf")
+        self._goal_field = np.full(self.map.grid.shape, np.inf)
 
     @classmethod
     def _check_lidar_config(cls, lidar_config: Optional[Dict]):
@@ -183,29 +193,50 @@ class BaseGridEnv(gym.Env, ABC):
         if self._legacy_goal_angle: return float(np.arctan2(dr, dc))
         return float(_wrap_angle(np.arctan2(-dr, dc) - self.robot.heading))
 
+    def _compute_goal_field(self):
+        """BFS (wavefront) distance from every free cell to the goal, 4-connected; inf where unreachable."""
+        gc, gr = (int(v) for v in self.goal_pos)
+        self._goal_field = PathPlanner(self.map.to_numpy()).wavefront((gr, gc))
+
+    def _geodesic_dist_to_goal(self) -> float:
+        """Shortest-path distance from the robot to the goal around obstacles (turns not counted); inf if unreachable."""
+        c, r = (int(v) for v in self.robot.position)
+        return float(self._goal_field[r, c])
+
     def _optimal_steps(self) -> float:
         """Shortest path length from the robot to the goal (wavefront BFS, turns not counted); inf if unreachable."""
-        c, r = (int(v) for v in self.robot.position)
-        gc, gr = (int(v) for v in self.goal_pos)
-        return PathPlanner(self.map.grid).min_steps(start=(r, c), goal=(gr, gc), method="wavefront")
+        return self._geodesic_dist_to_goal()
 
     # ------------------------------------------------------------
     # Episode
     # ------------------------------------------------------------
     def _select_map(self) -> GridMap:
-        """Map for the next episode: uniformly at random, or the next one in order when random_map is False."""
-        if self._random_map:
+        """
+        Map for the next episode: uniformly at random among the curriculum stage's
+        maps (all maps without curriculum), or the next one in order when random_map is False.
+        """
+        if self.curriculum is not None:
+            allowed = [i for i, m in enumerate(self.maps) if m.name in self.curriculum.stage.maps]
+            self._map_idx = allowed[int(self.np_random.integers(len(allowed)))]
+        elif self._random_map:
             self._map_idx = int(self.np_random.integers(len(self.maps)))
         else:
             self._map_idx = 0 if self._map_idx is None else (self._map_idx + 1) % len(self.maps)
         return self.maps[self._map_idx]
 
+    _max_goal_attempts = 10_000 # Then the curriculum's distance limit is dropped (e.g. no free cell close enough)
+
     def _sample_goal(self) -> np.ndarray:
         height, width = self.map.grid.shape
+        max_distance = self.curriculum.stage.max_goal_distance if self.curriculum is not None else None
+        attempts = 0
         while True:
+            attempts += 1
             r, c = int(self.np_random.integers(height)), int(self.np_random.integers(width))
             goal = np.array([c, r])
-            if self.map.is_free(r, c) and np.sqrt(np.sum((goal - np.asarray(self.robot.position))**2)) > self._min_separation_distance:
+            distance = np.sqrt(np.sum((goal - np.asarray(self.robot.position))**2))
+            too_far = max_distance is not None and distance > max_distance and attempts < self._max_goal_attempts
+            if self.map.is_free(r, c) and distance > self._min_separation_distance and not too_far:
                 return goal
 
     def reset(self, *, seed=None, options=None):
@@ -216,11 +247,13 @@ class BaseGridEnv(gym.Env, ABC):
 
         self.robot.random_reset(self.map, self.np_random)
         self.goal_pos = self._sample_goal()
+        self._compute_goal_field()
         self.steps = 0
 
         obs = self._get_observation()
         self._start_episode(obs)
         info = {'map': self.map.name, 'optimal_steps': self._optimal_steps(), 'dist2goal': self._dist_to_goal()}
+        if self.curriculum is not None: info['curriculum_stage'] = self.curriculum.stage_idx
 
         return obs, info
 
@@ -238,6 +271,7 @@ class BaseGridEnv(gym.Env, ABC):
         self._previous_action = -1 # Do nothing
         self._previous_obs = obs.copy()
         self._previous_dist_to_goal = self._dist_to_goal()
+        self._previous_geodesic_dist_to_goal = self._geodesic_dist_to_goal()
 
     def _finish_step(self, action: int, obs: np.ndarray, hit_obstacle: bool):
         """
@@ -262,6 +296,7 @@ class BaseGridEnv(gym.Env, ABC):
             (reward, terminated, truncated, info) as expected by gymnasium's step().
         """
         dist_to_goal = self._dist_to_goal()
+        geodesic_dist_to_goal = self._geodesic_dist_to_goal()
         rays = np.asarray(obs).reshape((-1, 2))[:-1, 0]
         detected = rays[rays >= 0]
         min_obstacle_dist = float(detected.min()) if detected.size else float(self.lidar.max_range)
@@ -278,17 +313,24 @@ class BaseGridEnv(gym.Env, ABC):
                           reached_goal=reached_goal, max_steps_reached=max_steps_reached,
                           steps=self.steps, max_steps=int(self.max_steps),
                           robot_pos=np.asarray(self.robot.position), goal_pos=np.asarray(self.goal_pos),
-                          map_diagonal=float(self._map_diagonal), lidar_max_range=float(self.lidar.max_range))
+                          map_diagonal=float(self._map_diagonal), lidar_max_range=float(self.lidar.max_range),
+                          geodesic_dist_to_goal=geodesic_dist_to_goal,
+                          previous_geodesic_dist_to_goal=self._previous_geodesic_dist_to_goal)
         reward, components = evaluate_reward(self.reward_fn, ctx)
 
         info = {'reached_goal': reached_goal, 'hit_obstacle': hit_obstacle, 'max_steps_reached': max_steps_reached,
                 'dist2goal': dist_to_goal, 'min_dist': min_obstacle_dist, 'steps': self.steps,
                 'goal_pos': self.goal_pos, 'robot_pos': self.robot.position, 'map': self.map.name,
                 'reward': reward, 'reward_components': components, **summarize_components(components)}
+        if self.curriculum is not None:
+            info['curriculum_stage'] = self.curriculum.stage_idx # Stage this episode was played in
+            if terminated or truncated:
+                info['curriculum_advanced'] = self.curriculum.record(reached_goal)
 
         self._previous_action = action
         self._previous_obs = obs.copy()
         self._previous_dist_to_goal = dist_to_goal
+        self._previous_geodesic_dist_to_goal = geodesic_dist_to_goal
         return reward, terminated, truncated, info
 
     # ------------------------------------------------------------
@@ -320,11 +362,13 @@ class Grid_Robot_Env(BaseGridEnv):
                 lidar_config: Optional[Dict] = None,
                 max_iteration_steps: Union[int,np.integer] = 10_000,
                 render_mode: Optional[str] = None,
-                cell_size: int = 32
+                cell_size: int = 32,
+                curriculum: Optional[SuccessCurriculum] = None
                 ) -> None:
         if not isinstance(map, GridMap): raise TypeError("The map must be of type GridMap")
         super().__init__(maps=[map], robot=robot, reward_fn=reward_fn, lidar_config=lidar_config,
-                         max_iteration_steps=max_iteration_steps, render_mode=render_mode, cell_size=cell_size)
+                         max_iteration_steps=max_iteration_steps, render_mode=render_mode, cell_size=cell_size,
+                         curriculum=curriculum)
 
     def _default_lidar(self) -> GridLidar:
         return GridLidar()
@@ -369,12 +413,13 @@ class Grid_Robot_Sections_Env(BaseGridEnv):
                 max_iteration_steps: Union[int,np.integer] = 10_000,
                 render_mode: Optional[str] = None,
                 cell_size: int = 32,
-                num_sections: int = _min_num_sections
+                num_sections: int = _min_num_sections,
+                curriculum: Optional[SuccessCurriculum] = None
                 ) -> None:
         if not isinstance(map, GridMap): raise TypeError("The map must be of type GridMap")
         self._setup(maps=[map], robot=robot, reward_fn=reward_fn, lidar_config=lidar_config,
                     max_iteration_steps=max_iteration_steps, render_mode=render_mode, cell_size=cell_size,
-                    num_sections=num_sections, random_map=True)
+                    num_sections=num_sections, random_map=True, curriculum=curriculum)
 
     def _setup(self, *, num_sections: int, **kwargs):
         if num_sections < self._min_num_sections or num_sections % 4 != 0: raise ValueError(f"The number of sections must be greater or equal to {self._min_num_sections} and a multiple of 4")
@@ -441,11 +486,12 @@ class Grid_Robot_Sections_Env_MultiMap(Grid_Robot_Sections_Env):
                 render_mode: Optional[str] = None,
                 cell_size: int = 32,
                 num_sections: int = Grid_Robot_Sections_Env._min_num_sections,
-                random_map: bool = True
+                random_map: bool = True,
+                curriculum: Optional[SuccessCurriculum] = None
                 ) -> None:
         self._setup(maps=maps, robot=robot, reward_fn=reward_fn, lidar_config=lidar_config,
                     max_iteration_steps=max_iteration_steps, render_mode=render_mode, cell_size=cell_size,
-                    num_sections=num_sections, random_map=random_map)
+                    num_sections=num_sections, random_map=random_map, curriculum=curriculum)
 
 # class Grid_Robot_Env_Image_lidar(gym.Env):
 #     """

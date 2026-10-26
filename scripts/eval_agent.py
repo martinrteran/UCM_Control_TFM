@@ -11,7 +11,8 @@ The environment is rebuilt to match training:
   and the number of sections from obs_dim, with the lidar used by tests 22-25.
 
 Networks are rebuilt from the checkpoint's state_dict shapes, so any MLP policy
-(GridAgentNet, SimpleQNetwork, PolicyNetwork...) loads. Recurrent agents are not supported.
+(GridAgentNet, SimpleQNetwork, PolicyNetwork...) loads, and RecurrentPPOAgent GRU
+checkpoints (detected by their `gru.*` weights) load as RecurrentPPOAgent.
 
 Usage:
     python scripts/eval_agent.py <checkpoint.pth> [options]
@@ -38,8 +39,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from tfm_control_ucm.core.grid_env.environment import Grid_Robot_Sections_Env_MultiMap
 from tfm_control_ucm.core.grid_env.map import GridMap
 from tfm_control_ucm.core.grid_env.robot import GridRobot, GridRobotNotTurning
-from tfm_control_ucm.core.agents.agent import GridAgent, PPOAgent
-from tfm_control_ucm.core.agents.utils import RLConfig, RLAlgorithm, PPOConfig
+from tfm_control_ucm.core.agents.agent import GridAgent, PPOAgent, RecurrentPPOAgent
+from tfm_control_ucm.core.agents.networks import RecurrentGRUPolicy, RecurrentGRUValue
+from tfm_control_ucm.core.agents.utils import RLConfig, RLAlgorithm, PPOConfig, PPORNNConfig
 from tfm_control_ucm.core.rewards import ProgressReward
 
 
@@ -89,6 +91,17 @@ def load_agent_from_checkpoint(path: str, device: torch.device):
 
     print(f"[checkpoint] algorithm={alg_str}  obs_dim={obs_dim}  action_dim={action_dim}  "
           f"global_step={ckpt.get('global_step', '?')}  episodes={ckpt.get('episode_count', '?')}")
+
+    if "gru.weight_ih_l0" in ckpt["policy_state_dict"]: # RecurrentPPOAgent (GRU)
+        hidden_dim = ckpt["policy_state_dict"]["fc.weight"].shape[0]
+        seq_len = cfg_dict.get("seq_len", 32)
+        config = PPORNNConfig(name="eval", obs_dim=obs_dim, action_dim=action_dim, algorithm=RLAlgorithm.PPO,  # type: ignore
+                              device=device, gamma=gamma, lr=lr, seq_len=seq_len)
+        agent = RecurrentPPOAgent(config, RecurrentGRUPolicy(obs_dim, hidden_dim, action_dim),
+                                  RecurrentGRUValue(obs_dim, hidden_dim))
+        print(f"[checkpoint] recurrent GRU agent, hidden_dim={hidden_dim}")
+        agent.load(path)
+        return agent, obs_dim, action_dim
 
     policy_net = StateDictMLP(ckpt["policy_state_dict"])
     if alg_str in ("grid_agent", "dqn", "ddqn"):

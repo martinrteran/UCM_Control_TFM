@@ -189,3 +189,29 @@ def test_map_diagonal_uses_largest_map():
     env = Grid_Robot_Sections_Env_MultiMap(maps=make_maps([(25, 25), (40, 30)]), robot=GridRobotNotTurning(),
                                            reward_fn=zero_reward, lidar_config=LIDAR)
     assert env._map_diagonal == pytest.approx(50.0)  # sqrt(40² + 30²)
+
+
+# ------------------------------------------------------------
+# Geodesic distance to the goal
+# ------------------------------------------------------------
+def test_geodesic_distance_goes_around_walls():
+    from tfm_control_ucm.core.grid_env.map import GridObstacle
+    wall = GridMap("wall", (25, 25), grid_obstacles=[GridObstacle((0, 12), (20, 1))])  # open on the right
+    env = Grid_Robot_Sections_Env(map=wall, robot=GridRobotNotTurning(), reward_fn=zero_reward, lidar_config=LIDAR)
+    env.reset(seed=0)
+    env.robot.position = (5, 16)
+    env.goal_pos = np.array([5, 8])
+    env._compute_goal_field()
+    assert env._dist_to_goal() == pytest.approx(8.0)
+    assert env._geodesic_dist_to_goal() == 2 * (20 - 5) + 8  # right to the gap, up, back left
+
+
+def test_step_context_carries_geodesic_distances():
+    calls = []
+    env = Grid_Robot_Sections_Env(map=GridMap("m", (25, 25)), robot=GridRobotNotTurning(),
+                                  reward_fn=lambda ctx: calls.append(ctx) or 0.0, lidar_config=LIDAR)
+    _, info = env.reset(seed=0)
+    env.step(1)
+    ctx = calls[0]
+    assert ctx.previous_geodesic_dist_to_goal == info["optimal_steps"]
+    assert abs(ctx.previous_geodesic_dist_to_goal - ctx.geodesic_dist_to_goal) == 1  # one 4-connected move

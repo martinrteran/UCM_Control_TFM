@@ -78,3 +78,24 @@ def test_summarize_components():
     summary = summarize_components({"a": -3.0, "b": 1.0, "c": 0.5})
     assert summary == {"componente_reward_min": 0.5, "componente_reward_max": 3.0, "componente_reward_diff": 2.5}
     assert summarize_components({})["componente_reward_diff"] == 0.0
+
+
+# ------------------------------------------------------------
+# Geodesic (BFS) progress
+# ------------------------------------------------------------
+def test_geodesic_progress_uses_the_shortest_path_distance():
+    # Detour around a wall: straight-line distance grows, path distance shrinks
+    ctx = make_ctx(previous_dist_to_goal=5.0, dist_to_goal=6.0,
+                   previous_geodesic_dist_to_goal=20.0, geodesic_dist_to_goal=19.0)
+    assert ProgressReward()(ctx).components["progress"] < 0
+    assert ProgressReward(distance="geodesic")(ctx).components["progress"] == pytest.approx(10.0 * 1.0 / 100.0)
+
+
+def test_geodesic_progress_falls_back_to_euclidean_when_unreachable():
+    ctx = make_ctx(previous_geodesic_dist_to_goal=float("inf"), geodesic_dist_to_goal=float("inf"))
+    assert ProgressReward(distance="geodesic")(ctx) == ProgressReward()(ctx)
+
+
+def test_invalid_distance_is_rejected():
+    with pytest.raises(ValueError):
+        ProgressReward(distance="manhattan")

@@ -15,7 +15,7 @@ TensorBoard tags (per episode unless noted):
     Reward/Total, Reward/Avg, Success/Episode, Success/Map/<map>,
     Done/Hit Obstacle, Done/Max Steps Reached,
     Steps/Episode, Steps/Min/Episode, Steps/Ratio/Episode,
-    Distances/Start, Distances/End, Distances/Change, Loss/Episode,
+    Distances/Start, Distances/End, Distances/Change, Loss/Episode, Curriculum/Stage (if the env has one),
     the agent's episode_metrics() (e.g. Policy/Epsilon/Episode, Agent/Entropy),
     per step: Loss/Global step, Info/Reward/Total/Steps, Info/Reward/Components/<name>,
     Info/Reward/{min,max,diff}/Steps.
@@ -195,6 +195,9 @@ class BaseTrainer(ABC):
         reward_fn = getattr(env, "reward_fn", None)
         if reward_fn is not None and hasattr(reward_fn, "get_config"):
             writer.add_text("Config/Reward", json.dumps(reward_fn.get_config(), indent=2, default=str))
+        curriculum = getattr(env, "curriculum", None)
+        if curriculum is not None and hasattr(curriculum, "get_config"):
+            writer.add_text("Config/Curriculum", json.dumps(curriculum.get_config(), indent=2, default=str))
 
     def _log_step(self, writer: SummaryWriter, info: dict, reward: float, global_step: int):
         writer.add_scalar("Info/Reward/Total/Steps", reward, global_step)
@@ -214,6 +217,8 @@ class BaseTrainer(ABC):
         writer.add_scalar("Done/Max Steps Reached", int(info.get('max_steps_reached', False)), episode)
         if 'map' in info:
             writer.add_scalar(f"Success/Map/{info['map']}", int(terminated), episode)
+        if 'curriculum_stage' in info:
+            writer.add_scalar("Curriculum/Stage", info['curriculum_stage'], episode)
 
         writer.add_scalar("Steps/Episode", ep_steps, episode)
         optimal_steps = reset_info.get('optimal_steps')

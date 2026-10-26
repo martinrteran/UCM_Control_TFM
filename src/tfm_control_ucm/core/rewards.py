@@ -13,6 +13,7 @@ Author: Martin
 from __future__ import annotations
 
 import dataclasses
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, NamedTuple, Tuple, Union
@@ -61,6 +62,11 @@ class StepContext:
         Largest map diagonal, for normalising distances.
     lidar_max_range : float
         Maximum lidar range.
+    geodesic_dist_to_goal : float
+        Shortest-path (4-connected BFS) distance from the robot to the goal after
+        the step, going around obstacles; inf if the goal is unreachable.
+    previous_geodesic_dist_to_goal : float
+        Same distance before the step.
     """
     action: int
     previous_action: int
@@ -78,6 +84,8 @@ class StepContext:
     goal_pos: np.ndarray
     map_diagonal: float
     lidar_max_range: float
+    geodesic_dist_to_goal: float = math.inf
+    previous_geodesic_dist_to_goal: float = math.inf
 
 
 class RewardResult(NamedTuple):
@@ -189,6 +197,10 @@ class ProgressReward(RewardFunction):
         Bonus when the goal is reached.
     collision_penalty : float
         Penalty when the robot hits a wall or an obstacle.
+    distance : str
+        "euclidean" (straight line) or "geodesic" (BFS shortest path around obstacles).
+        With "geodesic", a detour around a wall counts as progress; it falls back to the
+        Euclidean distance when the goal is unreachable.
     """
     progress_scale: float = 10.0
     clip_negative_progress: bool = False
@@ -197,9 +209,21 @@ class ProgressReward(RewardFunction):
     max_proximity_penalty: float = 1.0
     goal_reward: float = 20.0
     collision_penalty: float = 5.0
+    distance: str = "euclidean"
+
+    def __post_init__(self):
+        if self.distance not in ("euclidean", "geodesic"): raise ValueError("distance must be 'euclidean' or 'geodesic'")
+
+    def _distances(self, ctx: StepContext):
+        """(previous, current) distance to the goal used for the progress term."""
+        geodesic = (ctx.previous_geodesic_dist_to_goal, ctx.geodesic_dist_to_goal)
+        if self.distance == "geodesic" and all(math.isfinite(d) for d in geodesic):
+            return geodesic
+        return ctx.previous_dist_to_goal, ctx.dist_to_goal
 
     def __call__(self, ctx: StepContext) -> RewardResult:
-        progress = self.progress_scale * (ctx.previous_dist_to_goal - ctx.dist_to_goal) / ctx.map_diagonal
+        previous, current = self._distances(ctx)
+        progress = self.progress_scale * (previous - current) / ctx.map_diagonal
         if self.clip_negative_progress:
             progress = max(progress, 0.0)
 
