@@ -20,8 +20,11 @@ Phases 0 (tests), 1 (bug fixes), 2 (reward contract + `grid_training_25.py`),
 hooks) are done and pushed. Left: phase 5 (delete commented-out code, legacy
 classes and copy scripts). Tests 25 and 26 trained (§3): the curriculum speeds up early learning but
 does not change the final agent; map_simple (~78 %) and greedy loops remain the open problems.
-Tests 27 (geodesic reward) and 28 (GRU) trained: neither improves map_simple (~78 %, every goal
-is reachable). 28 is unstable (no gradient clipping in the recurrent agents).
+Tests 26-30 trained: curriculum, geodesic reward, GRU memory (28; fixed in 29) and a 30-cell lidar
+all leave map_simple at ~78 % (every goal is reachable). Test 25 is still the best agent. Its map_simple
+collisions (sampled) all happen with the lidar reporting the obstacle 1 cell away in the move direction:
+residual policy noise near walls, not perception; greedy turns them into loops. Next idea: invalid-action
+masking.
 
 ---
 
@@ -170,7 +173,7 @@ obstacles (14, overlapping: 121 occupied cells).
 
 ### 2g. Tests and bug fixes (decoupling phases 0–4)
 
-`pytest` (from the repo root, ~15 s) runs 104 tests in `tests/`
+`pytest` (from the repo root, ~15 s) runs 106 tests in `tests/`
 (`test_map`, `test_robot`, `test_environment`, `test_rewards`, `test_heading`,
 `test_training`, `test_scripts`, `test_curriculum`). `matplotlib` and `pandas` are installed in `.venv` (not in
 `requirements.txt`). They build tiny
@@ -222,6 +225,8 @@ a given run. Summary from commit messages + script contents:
 | 26 | Test 25 + `SuccessCurriculum` (5 stages: empty map, goals <= 20 -> + 1_obstacle, <= 30 -> + 4_obstacles -> + simple_map, <= 30 -> all maps, any distance = test 25's setting; 0.90/0.85 success over 500 episodes, min 500 / max 6000 per stage), `log_steps=False`, seed 0; 40k episodes in 3 h 18 min | all 4 maps | not committed yet | **stages started at episodes 0/1620/2120/3416/3916. Reaches 80 % success with ~half the environment steps of test 25, but the final agent is the same: eval 1000 eps sampled 93.9 % (25: 93.9 %), greedy 89.3 % (25: 91.1 %, n.s.), map_simple 77.8 % in both.** Plots: `plots/compare_25_26/` |
 | 27 | Test 25 with `ProgressReward(distance="geodesic")` (progress along the BFS shortest path), `log_steps=False`, no curriculum, seed 0; 2 h 52 min | all 4 maps | not committed yet | **No gain. Eval 1000 eps: sampled 93.4 % (25: 93.9 %, n.s.), map_simple 78.6 % (25: 77.8 %, n.s.); greedy worse, 85.0 % vs 91.1 % (z = -4.2), 137 loops vs 76.** Plots: `plots/compare_25_27_28/` |
 | 28 | Test 25 with `RecurrentPPOAgent` (GRU hidden 40, `seq_len` 32), same reward as 25, `log_steps=False`, seed 0; 4 h 37 min | all 4 maps | not committed yet | **Worse and unstable: collapsed from ~90 % to ~25 % success around episode 25k for ~7k episodes, then recovered. Eval: sampled 85.2 %, greedy 77.4 % (224 loops), map_simple ~60 %. RecurrentPPOAgent (and PPOGRUAgent) never clip gradients (`max_grad_norm` ignored) — likely cause; not a fair verdict on memory.** |
+| 29 | Test 28 with the recurrent training fixed (gradient clipping and padding mask in `RecurrentPPOAgent.train_step`) and lr 3e-4; seed 0; 2 h 51 min | all 4 maps | not committed yet | **Stable (no collapse), but still below the MLP: eval 1000 eps sampled 89.8 % (25: 93.9 %, z = -3.4), greedy 88.3 % (z = -2.1); map_simple ~70 %. Near-deterministic (entropy 0.27), successful paths optimal (median ratio 1.00), but 95-111 loops in both modes: memory as implemented does not remove loops.** Plots: `plots/compare_25_29_30/` |
+| 30 | Test 25 with a 30-cell lidar (was 10; safety margin kept at 6.67 cells), `log_steps=False`, seed 0; 2 h 41 min | all 4 maps | not committed yet | **Same as 25: sampled 93.7 % (z = -0.2), greedy 90.4 % (z = -0.5), map_simple 79.4 % (n.s.). Perception range is not the bottleneck.** |
 
 Test 25 takeaway: success climbs to ~83 % in 4k episodes and to 93 % by 40k, still rising (entropy 0.55 nats
 at the end, map_simple still improving). Successful paths are near-optimal (median steps/BFS 1.08). Failures:

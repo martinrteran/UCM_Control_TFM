@@ -1297,6 +1297,7 @@ class PPOGRUAgent(BaseRLAgent):
 
         self.optimizer.zero_grad()
         loss.backward()
+        self._clip_grad_norm()
         self.optimizer.step()
 
         self.buffer.clear()
@@ -1442,24 +1443,30 @@ class RecurrentPPOAgent(BaseRLAgent):
         h_p = torch.zeros(1, batch_size, self.policy_net.hidden_dim, device=self.device) # type: ignore
         h_v = torch.zeros(1, batch_size, self.value_net.hidden_dim, device=self.device) # type: ignore
 
+        # Sequences are zero-padded to the longest one: only real steps count in the losses
+        lengths = torch.tensor([len(s) for s in seq_states], device=self.device)
+        mask = (torch.arange(seq_len, device=self.device)[None, :] < lengths[:, None]).float()
+        masked_mean = lambda x: (x * mask).sum() / mask.sum()
+
         logits, _ = self.policy_net(states_t, h_p) # type: ignore
         dist = torch.distributions.Categorical(logits=logits)
         new_log_probs = dist.log_prob(actions_t)
-        entropy = dist.entropy().mean()
+        entropy = masked_mean(dist.entropy())
 
         values_pred, _ = self.value_net(states_t, h_v) # type: ignore
 
         ratio = torch.exp(new_log_probs - old_log_probs_t)
         surr1 = ratio * advantages_t
         surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * advantages_t
-        policy_loss = -torch.min(surr1, surr2).mean()
+        policy_loss = -masked_mean(torch.min(surr1, surr2))
 
-        value_loss = F.mse_loss(values_pred, returns_t)
+        value_loss = masked_mean((values_pred - returns_t).pow(2))
 
         loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy
 
         self.optimizer.zero_grad()
         loss.backward()
+        self._clip_grad_norm()
         self.optimizer.step()
 
         self.buffer.clear()

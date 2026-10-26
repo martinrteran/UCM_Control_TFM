@@ -115,3 +115,50 @@ def test_greedy_act_does_not_record():
     agent.on_episode_start()
     agent.act(state, training=False)
     assert not hasattr(agent, "_pending")
+
+
+# ------------------------------------------------------------
+# Recurrent PPO: gradient clipping and padding mask
+# ------------------------------------------------------------
+def fill_recurrent_episode(agent, env, steps):
+    state, _ = env.reset(seed=0)
+    agent.on_episode_start()
+    for _ in range(steps):
+        action = agent.act(state)
+        next_state, reward, terminated, truncated, _ = env.step(action)
+        agent.observe(state, action, reward, next_state, terminated, truncated)
+        state = next_state
+    agent.store(*(agent._episode[k] for k in ("states", "actions", "rewards", "dones", "log_probs", "values")))
+
+
+def test_recurrent_agent_clips_gradients(monkeypatch):
+    env = Grid_Robot_Sections_Env(map=GridMap("m", (25, 25)), robot=GridRobotNotTurning(), reward_fn=ProgressReward(),
+                                  lidar_config=LIDAR, num_sections=8, max_iteration_steps=1000)
+    agent = recurrent_agent(env)
+    calls = []
+    monkeypatch.setattr(agent, "_clip_grad_norm", lambda: calls.append(1))
+    fill_recurrent_episode(agent, env, 12)
+    agent.train_step()
+    assert calls == [1]
+
+
+def test_recurrent_value_loss_ignores_padding(monkeypatch):
+    import copy
+    env = Grid_Robot_Sections_Env(map=GridMap("m", (25, 25)), robot=GridRobotNotTurning(), reward_fn=ProgressReward(),
+                                  lidar_config=LIDAR, num_sections=8, max_iteration_steps=1000)
+    torch.manual_seed(0)
+    agent = recurrent_agent(env)  # seq_len 8
+    fill_recurrent_episode(agent, env, 11)  # chunks of 8 and 3: the second is padded with 5 steps
+    buffer = copy.deepcopy(agent.buffer)
+    monkeypatch.setattr(agent.optimizer, "step", lambda: None)  # keep the weights to recompute the loss
+    agent.train_step()
+
+    seq_states, _, _, _, seq_ret = buffer.build_sequences(agent._value_fn)
+    errors = []
+    with torch.no_grad():
+        for states, returns in zip(seq_states, seq_ret):
+            h = torch.zeros(1, 1, agent.value_net.hidden_dim)
+            values, _ = agent.value_net(states.unsqueeze(0), h)
+            errors.append((values.squeeze(0) - returns).pow(2))
+    expected = torch.cat(errors).mean().item()  # mean over the 11 real steps only
+    assert agent.last_value_loss == pytest.approx(expected, rel=1e-5)
