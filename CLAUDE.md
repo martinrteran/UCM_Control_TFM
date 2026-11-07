@@ -82,7 +82,7 @@ python scripts/inspect_checkpoint.py checkpoints/Test/24/
 
 **Agents** (`agents/`): Three-level hierarchy:
 1. `BaseRLAgent` (abstract) — handles device placement, optimizer init, replay buffer, gradient clipping, save/load, and the episode hooks the trainer uses (`on_episode_start`, `act`, `observe`, `on_episode_end`, `episode_metrics`, `train_on_step`). Defaults are off-policy (replay buffer, train every `eps_step`); the PPO agents keep the episode and train in `on_episode_end`.
-2. Algorithm-specific agents (`GridAgent`, `PPOAgent`, `PPOGRUAgent`, `RecurrentPPOAgent`, `SACDiscreteAgent`, `A2CAgent`, `DQNAgent`) that implement `select_action`, `train_step`, and `_compute_loss`.
+2. Algorithm-specific agents (`GridAgent`, `PPOAgent`, `PPOGRUAgent`, `RecurrentPPOAgent`, `SACDiscreteAgent`, `A2CAgent`, `DQNAgent` in `agent.py`; `MaskedDQNAgent` in `masked_dqn.py` — Double DQN with action masking, the DQN used since test 36) that implement `select_action`, `train_step`, and `_compute_loss`.
 3. `AgentFactory.create_agent(config)` — factory that dispatches on `RLAlgorithm` enum.
 
 Agent configuration uses typed dataclasses in `agents/utils.py`: `RLConfig` (base), `PPOConfig` (adds clip_eps, gae_lambda, entropy/value coefficients), `PPORNNConfig`, `SACConfig`.

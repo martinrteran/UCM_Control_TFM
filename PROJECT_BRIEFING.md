@@ -11,7 +11,7 @@
 > `.claude/skills/project-briefing/SKILL.md`) or edit this file by hand. Bump the
 > "Last updated" line below.
 
-**Last updated**: 2026-11-07 (by Claude, slip trainer + GridMap.save fix) · **Branch**: `Put-all-together` · **Latest commit**: "Slip trainer and GridMap.save fix" (after `30d7eac` "Slippery floors as new map, robot and environment classes"). Still untracked: the outputs of tests 26–32 and 311–314 (`runs/`, `checkpoints/`, `plots/`, `logs/`)
+**Last updated**: 2026-11-07 (by Claude, MaskedDQNAgent + test 36 script; test 33 training) · **Branch**: `Put-all-together` · **Latest commit**: "MaskedDQNAgent and test 36" (after `a8341e5` "Slip trainer and GridMap.save fix"). **Test 33 was launched 2026-11-07 19:27** (seed 0, logs in `logs/test33_train.{out,err}`). Still untracked: the outputs of tests 26–32 and 311–314 (`runs/`, `checkpoints/`, `plots/`, `logs/`)
 
 **Plan to February 2027** (delivery of code + thesis; user's RTX 5060 Ti; no ROS expected): slippery floors in the
 grid (tests 33-34, §2j) → **DQN on the current API** (no DQN run exists since test 25; the thesis is "DQN vs PPO")
@@ -183,6 +183,21 @@ change: the eval scripts, and `GridMap.save()` / `GridObstacle.get_json_repr()` 
 - Not done: a friction-aware planner (Dijkstra with expected cost) for `optimal_steps`; the goal only counts if the
   robot *ends* the step on it (sliding over it does not).
 
+### 2a-quinquies. `MaskedDQNAgent` (`core/agents/masked_dqn.py`, new; `DQNAgent` and `GridAgent` unchanged)
+
+Double DQN with invalid-action masking, the DQN counterpart of PPO + masking (test 31). Why a new agent:
+`DQNAgent` raised on masks, its target update checked `global_step % target_update` only on training steps (so it
+fired irregularly), its target maximised over invalid actions, and the shared `ReplayBuffer` rebuilds arrays from
+dicts on every sample. `MaskedDQNAgent`: ε-greedy among the valid actions (linear decay over `eps_decay`
+*training* steps; `training=False` is greedy and does not move ε); target `r + γ·Q_target(s', argmax_valid Q(s'))`
+with the next-state mask stored with the transition (it arrives with the next `act()`, so a non-terminal transition
+enters the buffer one step later); terminated **or** truncated = terminal (as `DQNAgent`: makes crashes final; small
+time-limit bias); hard target copy every `target_update` gradient updates; no update before `learning_starts`;
+`MaskedReplayBuffer` = preallocated numpy ring buffer. Config `MaskedDQNConfig(DQNConfig)` (+`learning_starts`,
+`eps_decay` default 500k). Logs `Policy/Epsilon/Episode`, `Agent/Q/Mean`, `Agent/DQN/Loss`, `Agent/DQN/Updates`.
+`eval_agent.py` loads `dqn`/`ddqn` checkpoints as `MaskedDQNAgent` (`grid_agent` still as `GridAgent`), so
+`eval_policy_modes.py` works; its "sampled" mode is ε-greedy with ε = `eps_end` for DQN. Tests: `test_masked_dqn.py`.
+
 ### 2b. Train/eval scripts
 
 - `train/grid_training_25.py` — **the working script**. Same setup as 24 (PPO,
@@ -206,6 +221,11 @@ change: the eval scripts, and `GridMap.save()` / `GridObstacle.get_json_repr()` 
 - `train/grid_training_34.py` — test 33 with `--terrain_obs proprio` (obs_dim 22). `--no-slippery --test_number 35`
   = test 31 maps, no slips, same observation (31 + momentum only: does the momentum alone remove greedy loops?).
   Not trained.
+- `train/grid_training_36.py` — **DQN side of the thesis comparison**: test 31 with `MaskedDQNAgent` (§2a-quinquies)
+  instead of PPO; same maps, reward, masking, lidar, step limit, seed, network body (`SimpleQNetwork` 3×64) and
+  40k episodes; DQN's own hyperparameters (lr 5e-4, buffer 100k, batch 64, ε 1 → 0.05 linear over 500k steps,
+  target copy every 1000 updates, learning starts at 5000 transitions, one update every 4 steps, Double DQN).
+  `config.json` has `"algorithm": "dqn"`. Smoke run: 463 steps/s on the GPU, 0 collisions.
 - Seed runs reuse the scripts with `--seed S --test_number NNS` (e.g. `grid_training_31.py --seed 1 --test_number 311`):
   outputs go to `runs/Test/311`, `checkpoints/Test/311`, and the analysis scripts accept those numbers.
 - `train/grid_training_22.py`–`_24.py` and the `* copy.py` scripts use the old
@@ -268,7 +288,7 @@ obstacles (14, overlapping: 121 occupied cells).
 
 ### 2g. Tests and bug fixes (decoupling phases 0–4)
 
-`pytest` (from the repo root, ~10 s) runs 169 tests in `tests/`
+`pytest` (from the repo root, ~11 s) runs 184 tests in `tests/` (incl. `test_masked_dqn`)
 (`test_map`, `test_robot`, `test_environment`, `test_rewards`, `test_heading`,
 `test_training`, `test_scripts`, `test_curriculum`, `test_action_masking`, `test_slip`). `matplotlib` and `pandas` are installed in `.venv` (not in
 `requirements.txt`). They build tiny
@@ -395,6 +415,7 @@ a given run. Summary from commit messages + script contents:
 | 33 | Test 31 on the slippery maps, `SlipModel()` defaults, slide into obstacle = collision, observation unchanged | 4 `_slippery` maps | "Slippery floors…" | **not trained yet** (§2a-quater) |
 | 34 | Test 33 + `terrain_obs="proprio"` (momentum, slipped flag, noisy μ here) | 4 `_slippery` maps | "Slippery floors…" | **not trained yet** |
 | 35 | `grid_training_34.py --no-slippery`: test 31 + proprio observation, no slips | all 4 maps | — | **optional, not trained**: isolates the effect of the momentum on the greedy loops |
+| 36 | Test 31 with `MaskedDQNAgent` (Double DQN + masking) instead of PPO, seed 0 | all 4 maps | "MaskedDQNAgent…" | **not trained yet** — the DQN baseline of the thesis |
 
 Test 25 takeaway: success climbs to ~83 % in 4k episodes and to 93 % by 40k, still rising (entropy 0.55 nats
 at the end, map_simple still improving). Successful paths are near-optimal (median steps/BFS 1.08). Failures:

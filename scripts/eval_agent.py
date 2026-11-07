@@ -40,6 +40,7 @@ from tfm_control_ucm.core.grid_env.environment import Grid_Robot_Sections_Env_Mu
 from tfm_control_ucm.core.grid_env.map import GridMap
 from tfm_control_ucm.core.grid_env.robot import GridRobot, GridRobotNotTurning
 from tfm_control_ucm.core.agents.agent import GridAgent, PPOAgent, RecurrentPPOAgent
+from tfm_control_ucm.core.agents.masked_dqn import MaskedDQNAgent, MaskedDQNConfig
 from tfm_control_ucm.core.agents.networks import RecurrentGRUPolicy, RecurrentGRUValue
 from tfm_control_ucm.core.agents.utils import RLConfig, RLAlgorithm, PPOConfig, PPORNNConfig
 from tfm_control_ucm.core.rewards import ProgressReward
@@ -108,7 +109,12 @@ def load_agent_from_checkpoint(path: str, device: torch.device):
         return agent, obs_dim, action_dim
 
     policy_net = StateDictMLP(ckpt["policy_state_dict"])
-    if alg_str in ("grid_agent", "dqn", "ddqn"):
+    if alg_str in ("dqn", "ddqn"): # DQNAgent / MaskedDQNAgent checkpoints (tests 36+): MaskedDQNAgent also acts with masks
+        config = MaskedDQNConfig(name="eval", obs_dim=obs_dim, action_dim=action_dim, algorithm=RLAlgorithm.DQN,
+                                 device=device, gamma=gamma, lr=lr,
+                                 **{k: cfg_dict[k] for k in ("eps_start", "eps_end", "eps_decay") if k in cfg_dict})
+        agent = MaskedDQNAgent(config, policy_net)
+    elif alg_str == "grid_agent":
         config = RLConfig(name="eval", obs_dim=obs_dim, action_dim=action_dim,
                           algorithm=RLAlgorithm.GRID_AGENT, device=device, gamma=gamma, lr=lr)
         agent = GridAgent(config, policy_net=policy_net, target_net=StateDictMLP(ckpt["policy_state_dict"]))
