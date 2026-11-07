@@ -36,7 +36,7 @@ class GridObstacle:
     
     def get_corners(self):  return self.p_corners
 
-    def get_json_repr(self):  return {'corner':self._corner,'size':self._size}
+    def get_json_repr(self):  return {'corner':[int(v) for v in self._corner],'size':[int(v) for v in self._size]}
 
     def __repr__(self):  return f'{{"corner":[{self._corner[0]},{self._corner[1]}],"size":[{self._size[0]},{self._size[1]}]}}'
 
@@ -166,8 +166,8 @@ class GridMap:
         data = {
             "name": self.name,
             "description": "Grid map representation",
-            "size": self._size,
-            "obstacles":  self._obstacles.copy(),
+            "size": [int(v) for v in self._size], # numpy values and GridObstacle objects are not JSON serialisable
+            "obstacles": [obstacle.get_json_repr() for obstacle in self._obstacles],
         }
         import os
         _path = os.path.join(path, self.name+".json")

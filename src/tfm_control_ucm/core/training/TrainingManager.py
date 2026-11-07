@@ -16,7 +16,6 @@ TensorBoard tags (per episode unless noted):
     Done/Hit Obstacle, Done/Max Steps Reached,
     Steps/Episode, Steps/Min/Episode, Steps/Ratio/Episode,
     Distances/Start, Distances/End, Distances/Change, Loss/Episode, Curriculum/Stage (if the env has one),
-    Slip/Count and Slip/Collision (if the env has a slip model),
     the agent's episode_metrics() (e.g. Policy/Epsilon/Episode, Agent/Entropy),
     per step: Loss/Global step, Info/Reward/Total/Steps, Info/Reward/Components/<name>,
     Info/Reward/{min,max,diff}/Steps.
@@ -152,7 +151,6 @@ class BaseTrainer(ABC):
         terminated = False
         ep_steps = 0
         ep_reward = 0.0
-        ep_slips = 0
         losses = []
         info = {}
 
@@ -169,7 +167,6 @@ class BaseTrainer(ABC):
 
             ep_steps += 1
             ep_reward += float(reward)
-            ep_slips += int(info.get('slipped', False))
             global_step += 1
 
             if agent.train_on_step and eps_step > 0 and ep_steps % eps_step == 0:
@@ -190,7 +187,7 @@ class BaseTrainer(ABC):
         loss = agent.on_episode_end(state)
         if loss is not None: losses.append(loss)
 
-        self._log_episode(writer, agent, episode, ep_reward, ep_steps, terminated, losses, reset_info, info, ep_slips)
+        self._log_episode(writer, agent, episode, ep_reward, ep_steps, terminated, losses, reset_info, info)
         return global_step
 
     # ------------------------------------------------------------
@@ -205,9 +202,6 @@ class BaseTrainer(ABC):
         curriculum = getattr(env, "curriculum", None)
         if curriculum is not None and hasattr(curriculum, "get_config"):
             writer.add_text("Config/Curriculum", json.dumps(curriculum.get_config(), indent=2, default=str))
-        slip_model = getattr(env, "slip_model", None)
-        if slip_model is not None and hasattr(slip_model, "get_config"):
-            writer.add_text("Config/Slip", json.dumps(slip_model.get_config(), indent=2, default=str))
 
     def _log_step(self, writer: SummaryWriter, info: dict, reward: float, global_step: int):
         writer.add_scalar("Info/Reward/Total/Steps", reward, global_step)
@@ -218,11 +212,8 @@ class BaseTrainer(ABC):
                 writer.add_scalar(f"Info/Reward/{stat}/Steps", info[f"componente_reward_{stat}"], global_step)
 
     def _log_episode(self, writer: SummaryWriter, agent: BaseRLAgent, episode: int, ep_reward: float, ep_steps: int,
-                     terminated: bool, losses: list, reset_info: dict, info: dict, slips: int = 0):
+                     terminated: bool, losses: list, reset_info: dict, info: dict):
         writer.add_scalar("Reward/Total", ep_reward, episode)
-        if 'slipped' in info: # The env has a slip model
-            writer.add_scalar("Slip/Count", slips, episode)
-            writer.add_scalar("Slip/Collision", int(info.get('slip_collision', False)), episode)
         writer.add_scalar("Reward/Avg", ep_reward / ep_steps if ep_steps > 0 else 0, episode)
 
         writer.add_scalar("Success/Episode", int(terminated), episode)

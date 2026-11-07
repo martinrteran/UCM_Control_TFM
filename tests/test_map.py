@@ -61,6 +61,19 @@ def test_str_draws_free_cells_and_obstacles():
     assert str(mapa) == ".#.\n..."
 
 
+def test_save_and_load_round_trip(tmp_path):
+    mapa = GridMap("rt", (12, 9), grid_obstacles=[GridObstacle((1, 1), (2, 3)), GridObstacle((6, 4), (3, 2))])
+    mapa.save(str(tmp_path / "maps"))  # the directory is created
+    loaded = GridMap.load(str(tmp_path / "maps" / "rt.json"))
+    assert loaded.name == "rt" and loaded.get_width() == 12 and loaded.get_height() == 9
+    assert (loaded.to_numpy() == mapa.to_numpy()).all()
+
+
+def test_obstacle_json_repr_is_plain_python():
+    import json
+    assert json.loads(json.dumps(GridObstacle((1, 2), (3, 4)).get_json_repr())) == {"corner": [1, 2], "size": [3, 4]}
+
+
 def test_constructor_does_not_alias_caller_list():
     obstacles = [GridObstacle((0, 0), (2, 2))]
     mapa = GridMap("m", (10, 10), grid_obstacles=obstacles)

@@ -27,6 +27,7 @@ from tfm_control_ucm.core.agents.utils import PPOConfig, RLAlgorithm
 from tfm_control_ucm.core.rewards import ProgressReward
 from tfm_control_ucm.core.slip import SLIP_KINDS, SlipModel
 import tfm_control_ucm.core.training.TrainingManager as training_manager
+from tfm_control_ucm.core.training.slip_trainer import SlipSingleTrainer
 from tfm_control_ucm.core.grid_env.slippery_environment import Slippery_Grid_Robot_Sections_Env_MultiMap
 from tfm_control_ucm.core.grid_env.slippery_map import SlipperyGridMap
 from tfm_control_ucm.core.grid_env.slippery_robot import SlipperyGridRobotNotTurning
@@ -161,7 +162,7 @@ def main():
         log_steps=False,
         action_masking=True
     )
-    singleTrainer = training_manager.SingleTrainer(logs_dir, f"./checkpoints/Test/{args.test_number}", t_config)
+    singleTrainer = SlipSingleTrainer(logs_dir, f"./checkpoints/Test/{args.test_number}", t_config) # Also logs Slip/*
     singleTrainer.add_agents(agent)
     singleTrainer.add_environments(env)
 

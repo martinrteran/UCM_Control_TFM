@@ -11,7 +11,7 @@
 > `.claude/skills/project-briefing/SKILL.md`) or edit this file by hand. Bump the
 > "Last updated" line below.
 
-**Last updated**: 2026-11-07 (by Claude, slippery floors moved to new classes) · **Branch**: `Put-all-together` · **Latest commit**: "Slippery floors as new map, robot and environment classes" (after `4b4629b`, whose changes to the shared classes it reverts). Still untracked: the outputs of tests 26–32 and 311–314 (`runs/`, `checkpoints/`, `plots/`, `logs/`)
+**Last updated**: 2026-11-07 (by Claude, slip trainer + GridMap.save fix) · **Branch**: `Put-all-together` · **Latest commit**: "Slip trainer and GridMap.save fix" (after `30d7eac` "Slippery floors as new map, robot and environment classes"). Still untracked: the outputs of tests 26–32 and 311–314 (`runs/`, `checkpoints/`, `plots/`, `logs/`)
 
 **Plan to February 2027** (delivery of code + thesis; user's RTX 5060 Ti; no ROS expected): slippery floors in the
 grid (tests 33-34, §2j) → **DQN on the current API** (no DQN run exists since test 25; the thesis is "DQN vs PPO")
@@ -133,17 +133,23 @@ existing map, robot and environment classes. A first version that modified them 
 | `SlipperyRobotMixin`, `SlipperyGridRobotNotTurning`, `SlipperyGridRobot` | `core/grid_env/slippery_robot.py` | `GridRobotNotTurning`, `GridRobot` |
 | `Slippery_Grid_Robot_Sections_Env_MultiMap` | `core/grid_env/slippery_environment.py` | `Grid_Robot_Sections_Env_MultiMap` |
 | `SlipperyPygameRenderer` | `renderers/slippery_renderer.py` | `PygameRenderer` |
+| `SlipSingleTrainer`, `SlipMultiEnvironmentTrainer` (`SlipLoggingMixin`, `SlipCounter`) | `core/training/slip_trainer.py` | `SingleTrainer`, `MultiEnvironmentTrainer` |
 | `SlipModel`, `classify_maneuver`, `SlipEvent`, `NO_SLIP` | `core/slip.py` | — |
 
-Shared files that did change: `TrainingManager.py` (counts `info['slipped']` per episode; logs `Slip/Count`,
-`Slip/Collision` and `Config/Slip` only when the env reports slips) and the eval scripts.
+`TrainingManager.py` is unchanged too. The slip trainers wrap each episode's env in `SlipCounter` (pass-through
+that reads `info` of every step), run the parent's loop and then log, per episode and only when the env reports
+slips: `Slip/Count`, `Slip/Rate` (slips/steps), `Slip/Collision`, `Slip/Kind/<kind>` (each kind of the slip model),
+plus the text `Config/Slip`. `export_episode_metrics.py` exports them to `episodes.csv` like any other tag. The
+plain `SingleTrainer` on a slippery env trains the same but logs no `Slip/*` (tested). Shared files that did
+change: the eval scripts, and `GridMap.save()` / `GridObstacle.get_json_repr()` (bug fix, user asked, see below).
 
 - **Map**: `GridTerrain(corner, size, friction, name)` patches fill `SlipperyGridMap.friction` (float, default 1.0 =
   normal floor; later patch wins on overlap). Optional `"terrains"` key in the JSON: plain map files load as a
   `SlipperyGridMap` with grip 1 everywhere. The occupancy `grid` is untouched, so the lidar, the BFS
   (`optimal_steps`, geodesic distance) and the action mask ignore friction. `str()` draws `~` for slippery free
-  cells; `SlipperyPygameRenderer` tints them blue. `SlipperyGridMap.save()` writes valid JSON (note: the plain
-  `GridMap.save()` still cannot serialise obstacles — numpy arrays / objects — not fixed, on purpose).
+  cells; `SlipperyPygameRenderer` tints them blue. `SlipperyGridMap.save()` adds the terrains. The plain
+  `GridMap.save()` used to crash (numpy arrays and `GridObstacle` objects in the JSON); fixed on 2026-11-07,
+  with a round-trip test in `test_map.py`.
 - **Robot**: the slipping happens in `SlipperyRobotMixin.move()`. It keeps the **momentum** (last displacement,
   `(0, 0)` stopped; turning in place stops it), uses the robot's own RNG (`set_rng`), and returns False **only on a
   collision** (a wheel spin returns True), so `BaseGridEnv.step()`'s `hit_obstacle = not moved` is unchanged.
@@ -194,7 +200,7 @@ Shared files that did change: `TrainingManager.py` (counts `info['slipped']` per
 - `train/grid_training_32.py` — test 31 with `clip_negative_progress=False` (default of the CLI flag;
   `--clip_negative_progress` restores 31). Trained (§3).
 - `train/grid_training_33.py` — test 31 on the slippery maps (`SlipperyGridMap`, `SlipperyGridRobotNotTurning`,
-  `Slippery_Grid_Robot_Sections_Env_MultiMap`) with `SlipModel()` (`collide`), observation of 31
+  `Slippery_Grid_Robot_Sections_Env_MultiMap`, `SlipSingleTrainer`) with `SlipModel()` (`collide`), observation of 31
   (`--terrain_obs none`). Slip CLI args `--demand_*`, `--slip_gain`, `--slip_max_prob`, `--slip_kinds`,
   `--lateral_demand`, `--into_obstacle`. `config.json` adds `slip`, `terrain_obs`, `terrain_obs_noise`. Not trained.
 - `train/grid_training_34.py` — test 33 with `--terrain_obs proprio` (obs_dim 22). `--no-slippery --test_number 35`
@@ -262,7 +268,7 @@ obstacles (14, overlapping: 121 occupied cells).
 
 ### 2g. Tests and bug fixes (decoupling phases 0–4)
 
-`pytest` (from the repo root, ~10 s) runs 164 tests in `tests/`
+`pytest` (from the repo root, ~10 s) runs 169 tests in `tests/`
 (`test_map`, `test_robot`, `test_environment`, `test_rewards`, `test_heading`,
 `test_training`, `test_scripts`, `test_curriculum`, `test_action_masking`, `test_slip`). `matplotlib` and `pandas` are installed in `.venv` (not in
 `requirements.txt`). They build tiny

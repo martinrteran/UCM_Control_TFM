@@ -137,7 +137,7 @@ class SlipperyGridMap(GridMap):
             "name": self.name,
             "description": "Grid map with terrain friction",
             "size": [int(v) for v in self._size],
-            "obstacles": [{"corner": [int(v) for v in o.get_corner()], "size": [int(v) for v in o.get_size()]} for o in self._obstacles],
+            "obstacles": [obstacle.get_json_repr() for obstacle in self._obstacles],
             "terrains": [terrain.get_json_repr() for terrain in self._terrains],
         }
         os.makedirs(path, exist_ok=True)

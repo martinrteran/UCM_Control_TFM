@@ -354,6 +354,59 @@ def test_neighbors_are_egocentric():
     assert env._terrain_features()[4:].tolist() == pytest.approx([1.0, 0.3, 1.0, 1.0])  # north is on the left
 
 
+# ------------------------------------------------------------
+# Slip trainer
+# ------------------------------------------------------------
+def _train(tmp_path, trainer_cls, env, episodes=3):
+    import torch
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+    from tfm_control_ucm.core.agents.agent import PPOAgent
+    from tfm_control_ucm.core.agents.networks import SimpleQNetwork, ValueNetwork
+    from tfm_control_ucm.core.agents.utils import PPOConfig, RLAlgorithm
+    from tfm_control_ucm.core.training.TrainingManager import TrainerConfig
+
+    torch.manual_seed(0)
+    obs, act = int(env.get_observation_dim()), int(env.get_action_dim())
+    agent = PPOAgent(PPOConfig(name="ppo", obs_dim=obs, action_dim=act, algorithm=RLAlgorithm.PPO, device="cpu", batch_size=8),
+                     policy_network=SimpleQNetwork(obs, act, 1, 16), value_network=ValueNetwork(obs, 16))
+    trainer = trainer_cls(str(tmp_path / "runs"), str(tmp_path / "ckpt"), TrainerConfig(num_episodes=1001, useTQDM=False, eps_step=2))
+    trainer.add_agents(agent).add_environments(env)
+    trainer.train(num_episodes=episodes)
+    acc = EventAccumulator(str(tmp_path / "runs" / "ppo"))
+    acc.Reload()
+    return acc
+
+
+def _slippery_training_env(slip_model):
+    return Slippery_Grid_Robot_Sections_Env_MultiMap(maps=[ice_map()], robot=SlipperyGridRobotNotTurning(slip_model=slip_model),
+                                                     reward_fn=zero_reward, lidar_config=LIDAR, max_iteration_steps=30)
+
+
+def test_slip_trainer_logs_the_slips_of_every_episode(tmp_path):
+    from tfm_control_ucm.core.training.slip_trainer import SlipSingleTrainer
+    acc = _train(tmp_path, SlipSingleTrainer, _slippery_training_env(SlipModel()))
+    scalars = acc.Tags()["scalars"]
+    for tag in ("Slip/Count", "Slip/Rate", "Slip/Collision", "Slip/Kind/overshoot", "Slip/Kind/stay", "Slip/Kind/diagonal", "Slip/Kind/drag"):
+        assert tag in scalars and len(acc.Scalars(tag)) == 3, tag
+    counts = [e.value for e in acc.Scalars("Slip/Count")]
+    by_kind = [sum(acc.Scalars(f"Slip/Kind/{k}")[i].value for k in ("overshoot", "stay", "diagonal", "drag")) for i in range(3)]
+    assert counts == by_kind and sum(counts) > 0  # all-ice floor: the robot slips
+    assert "Config/Slip/text_summary" in acc.Tags()["tensors"]
+    assert "Success/Episode" in scalars  # the parent's tags are still there
+
+
+def test_slip_trainer_logs_nothing_extra_without_slips(tmp_path):
+    from tfm_control_ucm.core.training.slip_trainer import SlipSingleTrainer
+    acc = _train(tmp_path, SlipSingleTrainer, _slippery_training_env(None))
+    assert not any(tag.startswith("Slip/") for tag in acc.Tags()["scalars"])
+
+
+def test_plain_trainer_does_not_log_slips(tmp_path):
+    from tfm_control_ucm.core.training.TrainingManager import SingleTrainer
+    acc = _train(tmp_path, SingleTrainer, _slippery_training_env(SlipModel()))
+    assert not any(tag.startswith("Slip/") for tag in acc.Tags()["scalars"])
+
+
 def test_terrain_obs_does_not_change_the_obstacle_distance():
     wall = [GridObstacle((14, 0), (1, 25))]
     def min_dist(mode):
