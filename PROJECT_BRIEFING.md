@@ -11,20 +11,29 @@
 > `.claude/skills/project-briefing/SKILL.md`) or edit this file by hand. Bump the
 > "Last updated" line below.
 
-**Last updated**: 2026-10-25 (by Claude, decoupling plan phases 0–4) · **Branch**: `Put-all-together` (pushed) · **Latest commit**: Phase 4 commit after `56e863d` "Phase 3 - BaseGridEnv and egocentric observation"
+**Last updated**: 2026-11-07 (by Claude, slippery floors + tests 33-34 scripts) · **Branch**: `Put-all-together` · **Latest commit**: "Slippery floors: terrain friction, maneuver-dependent slip model, tests 33-34" (after `35f3039` "Test 32"). Still untracked: the outputs of tests 26–32 and 311–314 (`runs/`, `checkpoints/`, `plots/`, `logs/`)
+
+**Plan to February 2027** (delivery of code + thesis; user's RTX 5060 Ti; no ROS expected): slippery floors in the
+grid (tests 33-34, §2j) → **DQN on the current API** (no DQN run exists since test 25; the thesis is "DQN vs PPO")
+→ final configurations with 3-5 seeds by ~20 Dec → writing in January. Gazebo/Isaac: out of the core scope;
+at most a time-boxed Isaac Lab demo in January if everything above is done.
 
 **Decoupling plan** — evaluation + 6-phase plan (with diagrams) in the Claude doc
 "Evaluación del desacoplamiento" (https://claude.ai/artifact/XgaBeVnuccLX64zzihFyJS).
 Phases 0 (tests), 1 (bug fixes), 2 (reward contract + `grid_training_25.py`),
 3 (`BaseGridEnv`, egocentric observation) and 4 (one training loop with agent
 hooks) are done and pushed. Left: phase 5 (delete commented-out code, legacy
-classes and copy scripts). Tests 25 and 26 trained (§3): the curriculum speeds up early learning but
-does not change the final agent; map_simple (~78 %) and greedy loops remain the open problems.
-Tests 26-30 trained: curriculum, geodesic reward, GRU memory (28; fixed in 29) and a 30-cell lidar
-all leave map_simple at ~78 % (every goal is reachable). Test 25 is still the best agent. Its map_simple
-collisions (sampled) all happen with the lidar reporting the obstacle 1 cell away in the move direction:
-residual policy noise near walls, not perception; greedy turns them into loops. Test 31 (invalid-action
-masking) is ready to train.
+classes and copy scripts).
+
+**Where the experiments stand**: tests 26-30 (curriculum, geodesic reward, GRU memory, 30-cell lidar) all
+left map_simple at ~78 %. **Test 31 (invalid-action masking) is the best agent, confirmed over 5 training seeds**
+(`plots/seeds_31/seeds_stats.md`): eval success greedy **95.7 ± 0.4 %** (95 % CI 95.3-96.2), sampled **99.3 ± 0.4 %**
+(98.8-99.8), map_simple 90.4 ± 1.6 % / 98.1 ± 1.4 %, 0 collisions in every seed. So the map_simple ceiling of
+tests 25-30 was **collisions, not local minima**. The only remaining failure is **greedy loops** (42.6 ± 3.3 of
+1000; sampling cuts them to 6.6 ± 3.8). **Test 32** (= 31 with signed progress, 1 seed) did not remove them:
+94.1 % greedy and 59 loops, 4.5 and 5.0 std of the 31 seeds away, so it is probably *worse* in greedy mode
+(sampled 98.8 %, within noise); confirming needs seeds 1-4 of test 32. Working explanation of the loops: partial
+observability (memoryless deterministic policy on aliased observations; §2i.1).
 
 ---
 
@@ -85,12 +94,15 @@ rules moved into the env, and every algorithm now logs the same tags.
 `reset()` info has `map`, `optimal_steps` (wavefront BFS, turns not counted) and
 `dist2goal`.
 
-Open design questions (not changed): collisions are `truncated`, and
+Open design questions (not changed; see §2i for why they matter): collisions are `truncated`, and
 `PPOAgent` passes only `terminated` as `dones` to GAE, so a collision
 bootstraps from the value of the state where the robot stopped. Also,
 `PPOAgent` samples random 64-transition batches from a 100k replay buffer of
 past episodes (stale log-probs and advantages) instead of updating on the
 latest rollout — closer to off-policy than textbook PPO.
+
+The masking uses the true occupancy of the neighbouring cells (privileged map information): in the thesis it is
+an external action constraint (a shield), not learned obstacle avoidance and not a formal safety guarantee.
 
 ### 2a-bis. Curriculum (`core/curriculum.py`)
 
@@ -110,18 +122,65 @@ free, turns always valid). Every env `reset`/`step` info has `action_mask`. With
 `_compute_loss`); other agents raise `NotImplementedError`. `eval_agent.py` applies it when the run's
 `config.json` has `"action_masking": true`.
 
+### 2a-quater. Slippery floors (`core/slip.py`, `GridMap.friction`)
+
+- **Map**: `GridTerrain(corner, size, friction, name)` patches fill `GridMap.friction` (float, default 1.0 =
+  normal floor; later patch wins on overlap). Optional `"terrains"` key in the JSON (old maps load unchanged).
+  The occupancy `grid` is untouched, so the lidar, the BFS (`optimal_steps`, geodesic distance) and the action
+  mask ignore friction. `str(map)` draws `~` for slippery free cells; the renderer tints them blue. Also fixed:
+  `GridMap.save()` could not serialise obstacles (numpy arrays / objects in the JSON).
+- **Slip model** (`SlipModel`, injected with `BaseGridEnv(slip_model=...)`; `None` = deterministic, exactly as
+  before): the env keeps the robot's **momentum** (last displacement, `(0, 0)` stopped; turning in place stops it).
+  Each move is classified against it — straight → *overshoot* (2 cells), start → *stay* (wheels spin, **not** a
+  collision), turn 90° → *diagonal* (through the momentum cell), reverse → *drag* (1 cell in the old direction);
+  optional *lateral* drift. `p = clip(gain·(demand − μ), 0, max_prob)` with μ of the cell the step starts on;
+  defaults demand 0.3/0.4/0.6/0.8, gain 2, cap 0.9 (ice μ=0.2: 0.2/0.4/0.8/0.9; wet μ=0.5: 0/0/0.2/0.6; μ=1: 0).
+  The demands are model parameters (only their order is justified). Moving into a wall is still a plain collision.
+  A slide into an obstacle: `into_obstacle="collide"` (default, user decision) = collision (`truncated`), the
+  robot stays on the last free cell; `"stop"` = no collision.
+- **Consequence for masking**: the mask only checks the intended cell, so with `collide` collisions are possible
+  again in masked runs (random masked policy on the slippery maps: 107/300 episodes end in a slide collision).
+- **RNG**: slips and sensor noise use their own generators (`SeedSequence(seed).spawn(2)` in `reset(seed)`), so
+  the map / start / goal sequence of a seeded evaluation is the same with or without slips (tested).
+- **Observation** `terrain_obs`: `"none"` (default), `"proprio"` (+4, egocentric: momentum forward/left, slipped on
+  the last step, noisy μ of the current cell — what odometry + IMU give a real robot; user asked for "the most
+  realistic"), `"neighbors"` (+8: also noisy μ of front/left/back/right, like a camera terrain classifier).
+  Noise `terrain_obs_noise` (std, default 0.05). Only for flat-observation envs (`_flat_observation`, Sections).
+  `_finish_step` and `render` now read the lidar from `self._base_obs`, not by parsing `obs`.
+- **Reward**: no friction term (user decision). `StepContext` gained `slipped`, `slip_kind`, `friction`
+  (defaults keep old rewards working). `info` (only with a slip model) has `slipped`, `slip_kind`,
+  `slip_maneuver`, `slip_probability`, `slip_collision`, `friction`. Trainer tags `Slip/Count`, `Slip/Collision`,
+  text `Config/Slip`. `eval_agent.py` / `eval_policy_modes.py` rebuild slip model and `terrain_obs` from
+  `config.json` (`"slip"`, `"terrain_obs"`, `"terrain_obs_noise"`) and count slips / slide collisions.
+- **Maps**: `maps/*_slippery.json` = the 4 maps with the same obstacles plus ice/wet patches (15-24 % of free
+  cells, several next to walls and obstacles); names end in `_slippery`, so per-map tags differ from test 31's.
+- Not done: a friction-aware planner (Dijkstra with expected cost) for `optimal_steps`; the goal only counts if the
+  robot *ends* the step on it (sliding over it does not).
+
 ### 2b. Train/eval scripts
 
 - `train/grid_training_25.py` — **the working script**. Same setup as 24 (PPO,
   4 maps, random map per episode) with `ProgressReward` built from CLI args,
   `--seed`, `--render/--no-render`, `SingleTrainer`, and writes the full config
   (args, reward params, maps, lidar) to `runs/Test/<N>/config.json`.
-  Smoke-tested for 8 episodes; not trained yet.
+  Base of every later script (26-32 are "test 25 + one change").
 - `train/grid_training_26.py` — test 25 + curriculum + `TrainerConfig(log_steps=False)`; curriculum CLI args
   `--curriculum_window`, `--stage_threshold`, `--stage_min_episodes`, `--stage_max_episodes`; `config.json` includes
   the curriculum.
 - `train/grid_training_27.py` (geodesic progress, `--progress_distance`) and `train/grid_training_28.py`
   (`RecurrentPPOAgent`, `--hidden_dim`, `--seq_len`) — both test 25 + one change, `log_steps=False`.
+- `train/grid_training_29.py` (28 with the recurrent training fixed), `_30.py` (30-cell lidar),
+  `_31.py` (action masking, `TrainerConfig(action_masking=True)`).
+- `train/grid_training_32.py` — test 31 with `clip_negative_progress=False` (default of the CLI flag;
+  `--clip_negative_progress` restores 31). Trained (§3).
+- `train/grid_training_33.py` — test 31 on the slippery maps with `SlipModel()` (`collide`), observation of 31
+  (`--terrain_obs none`). Slip CLI args `--demand_*`, `--slip_gain`, `--slip_max_prob`, `--slip_kinds`,
+  `--lateral_demand`, `--into_obstacle`. `config.json` adds `slip`, `terrain_obs`, `terrain_obs_noise`. Not trained.
+- `train/grid_training_34.py` — test 33 with `--terrain_obs proprio` (obs_dim 22). `--no-slippery --test_number 35`
+  = test 31 maps, no slips, same observation (31 + momentum only: does the momentum alone remove greedy loops?).
+  Not trained.
+- Seed runs reuse the scripts with `--seed S --test_number NNS` (e.g. `grid_training_31.py --seed 1 --test_number 311`):
+  outputs go to `runs/Test/311`, `checkpoints/Test/311`, and the analysis scripts accept those numbers.
 - `train/grid_training_22.py`–`_24.py` and the `* copy.py` scripts use the old
   11-positional-arg reward or no reward at all and fail at env construction.
   **Kept broken on purpose** (historical record, see convention above).
@@ -182,9 +241,9 @@ obstacles (14, overlapping: 121 occupied cells).
 
 ### 2g. Tests and bug fixes (decoupling phases 0–4)
 
-`pytest` (from the repo root, ~15 s) runs 113 tests in `tests/`
+`pytest` (from the repo root, ~10 s) runs 159 tests in `tests/`
 (`test_map`, `test_robot`, `test_environment`, `test_rewards`, `test_heading`,
-`test_training`, `test_scripts`, `test_curriculum`). `matplotlib` and `pandas` are installed in `.venv` (not in
+`test_training`, `test_scripts`, `test_curriculum`, `test_action_masking`, `test_slip`). `matplotlib` and `pandas` are installed in `.venv` (not in
 `requirements.txt`). They build tiny
 maps and inject their own reward, so they don't depend on any train script.
 
@@ -209,30 +268,71 @@ Bugs fixed (each reproduced by a test first):
 Still open: `GridAgent_2_FIXED`, the commented-out `Grid_Robot_Env_Image_lidar`
 and other commented-out code (phase 5).
 
-### 2h. How to analyse a finished run (test 31 is training now)
+### 2h. How to analyse a finished run; multi-seed runs
 
-Test 31 was launched on 2026-10-26 in the background (`logs/test31_train.err` shows the tqdm progress; the
-checkpoint is written only at the end, to `checkpoints/Test/31/PPO Agent/final.pth`). When it finishes:
+Seed runs reuse a script with `--test_number NNS` (`31S` = test 31 with seed S; outputs in `runs/Test/31S`,
+`checkpoints/Test/31S`). Seeds 1-4 of test 31 are done (tests 311-314, ~1 h 45 min each on the GPU). The same
+loop for test 32 (not run yet), PowerShell from the repo root with `.venv` active:
 
-```bash
-# Everything in one command: exports the CSV, evaluates greedy + sampled (1000 episodes, seed 0),
-# plots and writes summary.md with z-tests against the first test (|z| > 1.96 ~ significant at 5 %).
-python scripts/analyze_tests.py 25 31 --labels "25 base" "31 masking" --out plots/compare_25_31
-
-# More tests in one comparison (evaluations of 25-30 are cached in plots/evals/, so only 31 is evaluated)
-python scripts/analyze_tests.py 25 29 30 31 --labels "25 base" "29 GRU" "30 lidar 30" "31 masking"
+```powershell
+foreach ($s in 1..4) {
+    python train/grid_training_32.py --seed $s --test_number "32$s" > "logs/test32${s}_train.out" 2> "logs/test32${s}_train.err"
+}
 ```
 
-Pieces, if needed on their own:
-- `scripts/export_episode_metrics.py "runs/Test/31/PPO Agent"` → `runs/Test/31/episodes.csv` (one pass over the event file).
-- `scripts/eval_policy_modes.py 31` → `plots/evals/eval_31_e1000_s0.json` (greedy vs sampled, per map, loops, path ratio;
-  applies action masking when `config.json` has it). ~20–40 min for 1000 episodes x 2 modes.
-- `scripts/plot_episode_csv.py runs/Test/31/episodes.csv --out plots/test31` → single-run plots + `summary_by_phase.csv`.
-- `scripts/compare_episode_csv.py <csv...> --labels ... --out ...` → comparison plots + phase table.
-- `scripts/eval_agent.py "checkpoints/Test/31/PPO Agent/final.pth" --episodes 100` → per-episode printout.
+Then evaluate and compare (`--seed` of `analyze_tests.py` is the *evaluation* seed and stays 0, so every training
+seed is evaluated on the same 1000 episodes; existing evaluations in `plots/evals/` are reused):
 
-What to look at for test 31: collisions should be 0 in both modes; whether success on map_simple goes above
-~78 %; whether greedy timeouts (loops) grow, since masking removes collisions but not loops.
+```bash
+python scripts/analyze_tests.py 32 321 322 323 324 --labels "32 s0" "32 s1" "32 s2" "32 s3" "32 s4" --out plots/seeds_32
+```
+
+`summary.md` gives one row per seed with z-tests against the first; for the thesis report mean ± std across seeds
+and a t interval (n = 5: t = 2.776), as in `plots/seeds_31/seeds_stats.md` (generated from the eval JSONs; no
+script in the repo yet). Note: `runs/Test/311/PPO Agent/` also holds a 50 KB event file from an aborted first
+start; the export uses the latest event file, so it is harmless.
+
+Pieces, if needed on their own:
+- `scripts/export_episode_metrics.py "runs/Test/<N>/PPO Agent"` → `runs/Test/<N>/episodes.csv` (one pass over the event file).
+- `scripts/eval_policy_modes.py <N>` → `plots/evals/eval_<N>_e1000_s0.json` (greedy vs sampled, per map, loops, path ratio;
+  applies action masking when `config.json` has it). ~2 min per mode on CPU (measured on Linux for tests 31 and 32).
+- `scripts/plot_episode_csv.py runs/Test/<N>/episodes.csv --out plots/test<N>` → single-run plots + `summary_by_phase.csv`.
+- `scripts/compare_episode_csv.py <csv...> --labels ... --out ...` → comparison plots + phase table.
+- `scripts/eval_agent.py "checkpoints/Test/<N>/PPO Agent/final.pth" --episodes 100` → per-episode printout.
+
+The evaluations are paired: with the same evaluation seed every test sees the same sequence of maps and
+start/goal positions. The z-tests measure evaluation noise of one trained agent, not training variability; for
+test 31 the training-seed spread is small (std 0.4 points in total success, 1.6 in greedy map_simple).
+
+### 2i. Code review findings (2026-11-04), not fixed yet
+
+1. **Clipped progress gives cycles a positive return, but that is not what causes the loops** (verified by running
+   `ProgressReward` with the test 25 parameters, 40x60 map, diagonal 72.1): one cell towards the goal +0.089, one
+   cell away -0.050, so an A-B-A cycle earns +0.039 per 2 steps (+7.7 over 400 steps); unclipped -0.100 per cycle.
+   The clipped term is not a potential difference, so the policy-invariance result of potential-based shaping
+   (Ng, Harada & Russell 1999) does not hold. Test 32 removed the clip and loops did not fall: 59 vs 42.6 ± 3.3
+   over the 5 seeds of test 31 (one seed of 32, so not yet conclusive; see §2h).
+   Working explanation: the observation (local lidar + goal vector) aliases nearby cells, and a memoryless
+   deterministic (greedy) policy can cycle between them; sampling breaks the cycles (31: 41 -> 6 loops). In
+   POMDPs stochastic memoryless policies can be strictly better than deterministic ones (Singh, Jaakkola &
+   Jordan 1994). Options: report the sampled policy as the main mode; add minimal memory (previous action or
+   visit count in the observation) or GRU + masking.
+2. **`PPOAgent` is not textbook PPO** (§2a): one gradient step of 64 samples per episode from a 100k buffer of past
+   episodes (stale `old_log_probs` and advantages), no fresh rollout, no epochs, no advantage normalisation;
+   `PPOConfig.rollout_steps` and `clip_ratio` are unused. For a "DQN vs PPO" thesis either name it as an
+   off-policy variant or add a standard PPO (rollout -> K epochs -> clear buffer) and compare.
+3. **Collisions are `truncated`** (§2a): the crash costs -5 + gamma*V(crash state). Gymnasium semantics: an episode
+   end caused by the MDP (crash) is `terminated`. Masked runs (31, 32) are not affected.
+4. **One training seed per configuration** except test 31 (5 seeds): claims between other tests hold for those
+   seeds only; final thesis configurations need 3-5 seeds and interval estimates (Agarwal et al. 2021).
+5. **Latent bug**: `PolicyNetwork.forward` returns softmax probabilities but `PPOAgent` and `SACDiscreteAgent` read
+   them with `Categorical(logits=...)` (double softmax: with 4 actions the top probability is capped at
+   e/(e+3) = 0.475). Only hits agents built without explicit networks; tests 25-32 pass `SimpleQNetwork` (logits).
+6. Minor: observations not normalised (goal distance up to ~72 vs lidar <= 10, angles in radians); `lr=1e-3` high
+   for PPO; `select_action` increments `global_step` in evaluation too; `_sample_goal` loops forever if no free cell
+   is farther than `_min_separation_distance`; `ReplayBuffer` stores dicts and rebuilds arrays on every sample.
+7. Linux-only failures (Windows unaffected): `core/training/utils.py` imports `msilib` (Windows-only module), and
+   on POSIX `InterruptHandler.__enter__` registers `self._handle_soft_reset`, which does not exist.
 
 ---
 
@@ -261,13 +361,20 @@ a given run. Summary from commit messages + script contents:
 | 28 | Test 25 with `RecurrentPPOAgent` (GRU hidden 40, `seq_len` 32), same reward as 25, `log_steps=False`, seed 0; 4 h 37 min | all 4 maps | not committed yet | **Worse and unstable: collapsed from ~90 % to ~25 % success around episode 25k for ~7k episodes, then recovered. Eval: sampled 85.2 %, greedy 77.4 % (224 loops), map_simple ~60 %. RecurrentPPOAgent (and PPOGRUAgent) never clip gradients (`max_grad_norm` ignored) — likely cause; not a fair verdict on memory.** |
 | 29 | Test 28 with the recurrent training fixed (gradient clipping and padding mask in `RecurrentPPOAgent.train_step`) and lr 3e-4; seed 0; 2 h 51 min | all 4 maps | not committed yet | **Stable (no collapse), but still below the MLP: eval 1000 eps sampled 89.8 % (25: 93.9 %, z = -3.4), greedy 88.3 % (z = -2.1); map_simple ~70 %. Near-deterministic (entropy 0.27), successful paths optimal (median ratio 1.00), but 95-111 loops in both modes: memory as implemented does not remove loops.** Plots: `plots/compare_25_29_30/` |
 | 30 | Test 25 with a 30-cell lidar (was 10; safety margin kept at 6.67 cells), `log_steps=False`, seed 0; 2 h 41 min | all 4 maps | not committed yet | **Same as 25: sampled 93.7 % (z = -0.2), greedy 90.4 % (z = -0.5), map_simple 79.4 % (n.s.). Perception range is not the bottleneck.** |
-| 31 | Test 25 with invalid-action masking (`TrainerConfig(action_masking=True)`: PPO samples only among `info["action_mask"]` = `Robot.valid_actions(map)`, acting and learning with the masked policy), `log_steps=False`, seed 0 | all 4 maps | not committed yet | **ready, not trained** (40-episode smoke test: 0 collisions). Isolates loops / local minima |
+| 31 | Test 25 with invalid-action masking (`TrainerConfig(action_masking=True)`: PPO samples only among `info["action_mask"]` = `Robot.valid_actions(map)`, acting and learning with the masked policy), `log_steps=False`, seed 0 | all 4 maps | not committed yet | **Best agent. Eval 1000 eps: sampled 99.4 % (25: 93.9 %, z = +6.8), map_simple 98.8 % (z = +7.3); greedy 95.9 % (25: 91.1 %, z = +4.4), map_simple 92.3 %; 0 collisions; greedy 41 timeouts, all loops (25: 76). Faster learning: 84.7 % success in episodes 0-10k (25: 72.2 %), 99.5 % in 30-40k.** The map_simple ceiling was collisions, not local minima. Plots: `plots/compare_25_31/` |
+| 32 | Test 31 with signed progress (`clip_negative_progress=False`), seed 0; 1 h 44 min | all 4 maps | not committed yet | **Hypothesis refuted: no fewer loops. Eval 1000 eps vs 31: greedy 94.1 % (31: 95.9 %, z = -1.85, p = 0.08), 59 loops (31: 41); sampled 98.8 % (31: 99.4 %, p = 0.24), map_simple 96.4 %; 0 collisions; same final entropy (0.51). Faster early (88.5 % in episodes 0-10k vs 84.7 %), slightly lower late (98.9 % vs 99.5 %).** Plots: `plots/compare_25_31_32/` |
+| 311-314 | Test 31, seeds 1-4 (`grid_training_31.py --seed S --test_number 31S`), ~1 h 45 min each | all 4 maps | not committed yet | **Test 31 is robust to the seed. Over seeds 0-4: greedy 95.7 ± 0.4 % (range 95.2-96.1), sampled 99.3 ± 0.4 % (98.9-99.8), map_simple 90.4 ± 1.6 % greedy / 98.1 ± 1.4 % sampled, loops 42.6 ± 3.3 greedy / 6.6 ± 3.8 sampled, 0 collisions; training success in episodes 30-40k 99.3 ± 0.3 %.** Table: `plots/seeds_31/seeds_stats.md`; per-seed summary and plots: `plots/seeds_31/` |
+| 321-324 | Test 32, seeds 1-4 | all 4 maps | — | **optional, not run**: would confirm whether signed progress is worse in greedy mode (§2h) |
+| 33 | Test 31 on the slippery maps, `SlipModel()` defaults, slide into obstacle = collision, observation unchanged | 4 `_slippery` maps | "Slippery floors…" | **not trained yet** (§2a-quater) |
+| 34 | Test 33 + `terrain_obs="proprio"` (momentum, slipped flag, noisy μ here) | 4 `_slippery` maps | "Slippery floors…" | **not trained yet** |
+| 35 | `grid_training_34.py --no-slippery`: test 31 + proprio observation, no slips | all 4 maps | — | **optional, not trained**: isolates the effect of the momentum on the greedy loops |
 
 Test 25 takeaway: success climbs to ~83 % in 4k episodes and to 93 % by 40k, still rising (entropy 0.55 nats
 at the end, map_simple still improving). Successful paths are near-optimal (median steps/BFS 1.08). Failures:
 the greedy policy loops (35 of its 36 timeouts revisit one cell >= 20 times; sampling actions removes them,
-4_obstacles goes 89 % -> 100 %), and map_simple (walls forming a pocket that needs a detour away from the
-goal) stays at ~78 % with either policy — the local-minimum failure mode of Gao et al. 2025. The event file
+4_obstacles goes 89 % -> 100 %), and map_simple stays at ~78 % with either policy. That was first read as the
+local-minimum failure mode of Gao et al. 2025, but test 31 (masking) lifts map_simple to 98.8 % (sampled): those
+failures were collisions near walls, not local minima. The event file
 is 1.9 GB because of per-step logging (`TrainerConfig.log_steps`); `scripts/export_episode_metrics.py` +
 `scripts/plot_episode_csv.py` analyse it from a CSV.
 
@@ -317,6 +424,7 @@ Only the parts not fully obvious from `CLAUDE.md`, or useful jump points:
 - Observation (`Grid_Robot_Sections_Env[_MultiMap]`): `num_sections` angular LIDAR buckets (each `[nearest_dist, angle]`; empty sections get `[max_range, section_center_angle]`) followed by `[dist_to_goal, angle_to_goal]`. `obs_dim = num_sections*2 + 2`. All angles egocentric, counter-clockwise, 0 = robot heading (east for `GridRobotNotTurning`).
 - `num_sections = 4 * n` (CLI `--n`, default 2 → 8 sections), must be ≥ 4 and a multiple of 4. `lidar num_rays = n_sections*15` so each section has several candidate rays.
 - Reward: `ProgressReward` from `core/rewards.py`, injected by the train script (§2a). Episode end decided by the env: goal within 1 cell → `terminated`; collision or step limit → `truncated`.
+- Optional terrain values after the goal pair (`terrain_obs`, §2a-quater): `proprio` +4, `neighbors` +8.
 
 ---
 

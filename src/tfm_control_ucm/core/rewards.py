@@ -67,6 +67,12 @@ class StepContext:
         the step, going around obstacles; inf if the goal is unreachable.
     previous_geodesic_dist_to_goal : float
         Same distance before the step.
+    slipped : bool
+        The move slipped this step (see core/slip.py); always False without a slip model.
+    slip_kind : str
+        "none", "overshoot", "stay", "diagonal", "drag" or "lateral".
+    friction : float
+        Grip of the cell the robot stood on when the step started (1 = normal floor).
     """
     action: int
     previous_action: int
@@ -86,6 +92,9 @@ class StepContext:
     lidar_max_range: float
     geodesic_dist_to_goal: float = math.inf
     previous_geodesic_dist_to_goal: float = math.inf
+    slipped: bool = False
+    slip_kind: str = "none"
+    friction: float = 1.0
 
 
 class RewardResult(NamedTuple):

@@ -1,0 +1,12 @@
+{
+    "name": "1_obstacle_slippery",
+    "size": [40,60],
+    "obstacles": [
+        {"corner":[10,25], "size":[20,10]}
+    ],
+    "terrains": [
+        {"corner":[8,20],  "size":[24,5],  "friction":0.2, "name":"ice"},
+        {"corner":[8,35],  "size":[24,5],  "friction":0.5, "name":"wet"},
+        {"corner":[30,25], "size":[10,10], "friction":0.5, "name":"wet"}
+    ]
+}

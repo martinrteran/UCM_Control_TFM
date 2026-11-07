@@ -1,0 +1,10 @@
+{
+    "name": "obstacle_free_map_slippery",
+    "size": [40,60],
+    "obstacles": [],
+    "terrains": [
+        {"corner":[12,22], "size":[16,16], "friction":0.2, "name":"ice"},
+        {"corner":[0,5],   "size":[4,20],  "friction":0.2, "name":"ice"},
+        {"corner":[0,52],  "size":[40,6],  "friction":0.5, "name":"wet"}
+    ]
+}

@@ -1,0 +1,16 @@
+{
+    "name": "4_obstacles_slippery",
+    "size": [60,60],
+    "obstacles": [
+        {"corner":[10,15], "size":[10,10]}
+        ,{"corner":[30,40], "size":[10,10]}
+        ,{"corner":[30,15], "size":[10,10]}
+        ,{"corner":[10,40], "size":[10,10]}
+    ],
+    "terrains": [
+        {"corner":[20,25], "size":[10,15], "friction":0.2, "name":"ice"},
+        {"corner":[20,15], "size":[10,10], "friction":0.5, "name":"wet"},
+        {"corner":[20,40], "size":[10,10], "friction":0.5, "name":"wet"},
+        {"corner":[40,15], "size":[6,35],  "friction":0.2, "name":"ice"}
+    ]
+}

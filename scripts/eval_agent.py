@@ -43,6 +43,7 @@ from tfm_control_ucm.core.agents.agent import GridAgent, PPOAgent, RecurrentPPOA
 from tfm_control_ucm.core.agents.networks import RecurrentGRUPolicy, RecurrentGRUValue
 from tfm_control_ucm.core.agents.utils import RLConfig, RLAlgorithm, PPOConfig, PPORNNConfig
 from tfm_control_ucm.core.rewards import ProgressReward
+from tfm_control_ucm.core.slip import SlipModel
 
 
 MAPS_DIR = Path("./maps")
@@ -119,7 +120,16 @@ def load_agent_from_checkpoint(path: str, device: torch.device):
     return agent, obs_dim, action_dim
 
 
+def slip_settings(run_config: Optional[dict]):
+    """(SlipModel or None, terrain_obs, terrain_obs_noise) of a run (tests 33+ store them in config.json)."""
+    if not run_config: return None, "none", 0.05
+    slip_cfg = run_config.get("slip")
+    slip_model = SlipModel(**{k: v for k, v in slip_cfg.items() if k != "name"}) if slip_cfg else None
+    return slip_model, run_config.get("terrain_obs", "none"), run_config.get("terrain_obs_noise", 0.05)
+
+
 def build_env(args, obs_dim: int, action_dim: int, run_config: Optional[dict]):
+    slip_model, terrain_obs, terrain_obs_noise = slip_settings(run_config)
     if run_config:
         map_paths = run_config["maps"]
         lidar_config = run_config["lidar"]
@@ -143,14 +153,17 @@ def build_env(args, obs_dim: int, action_dim: int, run_config: Optional[dict]):
     env = Grid_Robot_Sections_Env_MultiMap(maps=[GridMap.load(p) for p in map_paths], robot=robot, reward_fn=reward,
                                            lidar_config=lidar_config, num_sections=num_sections,
                                            max_iteration_steps=max_steps, cell_size=args.cell_size,
-                                           render_mode="human" if args.render else None)
+                                           render_mode="human" if args.render else None,
+                                           slip_model=slip_model, terrain_obs=terrain_obs,
+                                           terrain_obs_noise=terrain_obs_noise)
     # Runs without config.json (tests <= 24) were trained with the mirrored goal angle
     env._legacy_goal_angle = run_config is None if args.legacy_goal_angle is None else args.legacy_goal_angle
     if env.get_observation_dim() != obs_dim:
         raise ValueError(f"The rebuilt environment gives obs_dim={env.get_observation_dim()} but the checkpoint "
                          f"expects {obs_dim}. Pass the training settings explicitly or add a config.json to the run.")
     print(f"[env] robot={type(robot).__name__}  sections={num_sections}  max_steps={max_steps}  "
-          f"maps={[Path(p).stem for p in map_paths]}  legacy_goal_angle={env._legacy_goal_angle}")
+          f"maps={[Path(p).stem for p in map_paths]}  legacy_goal_angle={env._legacy_goal_angle}  "
+          f"slip={'on' if slip_model else 'off'}  terrain_obs={terrain_obs}")
     return env
 
 
@@ -163,6 +176,7 @@ def run_eval(agent, env, num_episodes: int, render: bool, seed: Optional[int], a
         done = False
         ep_reward = 0.0
         ep_steps  = 0
+        ep_slips  = 0
 
         while not done:
             if render:
@@ -172,10 +186,13 @@ def run_eval(agent, env, num_episodes: int, render: bool, seed: Optional[int], a
             done = terminated or truncated
             ep_reward += reward
             ep_steps  += 1
+            ep_slips  += int(info.get("slipped", False))
 
         outcome = "success" if info.get("reached_goal") else "collision" if info.get("hit_obstacle") else "timeout"
-        records.append({"ep": ep + 1, "map": map_name, "reward": ep_reward, "steps": ep_steps, "outcome": outcome})
-        print(f"  ep {ep+1:4d}  {map_name:<18s} reward={ep_reward:7.2f}  steps={ep_steps:5d}  {outcome}")
+        records.append({"ep": ep + 1, "map": map_name, "reward": ep_reward, "steps": ep_steps, "outcome": outcome,
+                        "slips": ep_slips, "slip_collision": bool(info.get("slip_collision", False))})
+        slip_note = f"  slips={ep_slips}" + (" (slide into an obstacle)" if info.get("slip_collision") else "") if "slipped" in info else ""
+        print(f"  ep {ep+1:4d}  {map_name:<18s} reward={ep_reward:7.2f}  steps={ep_steps:5d}  {outcome}{slip_note}")
 
     rewards = [r["reward"] for r in records]
     steps   = [r["steps"]  for r in records]
@@ -191,6 +208,9 @@ def run_eval(agent, env, num_episodes: int, render: bool, seed: Optional[int], a
           f"min={np.min(rewards):.2f}  max={np.max(rewards):.2f}")
     print(f"  Steps    : mean={np.mean(steps):.1f}  std={np.std(steps):.1f}  "
           f"min={np.min(steps)}  max={np.max(steps)}")
+    if any(r["slips"] for r in records):
+        print(f"  Slips    : mean={np.mean([r['slips'] for r in records]):.2f} per episode  "
+              f"collisions caused by a slide={sum(r['slip_collision'] for r in records)}")
 
     by_map = defaultdict(list)
     for r in records:

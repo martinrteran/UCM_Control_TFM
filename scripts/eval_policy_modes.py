@@ -8,6 +8,8 @@ runs/Test/<N>/config.json, final distribution: all maps, any distance).
 Per mode and map it counts success / collision / timeout, the timeouts that are
 loops (the robot visits one cell >= 20 times) and the median steps / optimal
 steps of successful episodes. Action masking is applied when the run used it.
+Runs with a slip model (tests 33+) also get "slips": per map and slip kind, and
+the episodes that ended because a slide hit an obstacle ("<map>/slide_collision").
 
 Usage:
     python scripts/eval_policy_modes.py 31 --episodes 1000 --seed 0
@@ -44,6 +46,7 @@ def evaluate_mode(test: int, mode: str, episodes: int, seed: int) -> dict:
     masking = bool(config.get("action_masking", False))
 
     per_map, ratios = defaultdict(Counter), defaultdict(list)
+    slips = Counter() # Per map: slips (kind), slide collisions; only filled when the run has a slip model
     loops = 0
     for ep in range(episodes):
         state, info = env.reset(seed=seed if ep == 0 else None)
@@ -57,15 +60,22 @@ def evaluate_mode(test: int, mode: str, episodes: int, seed: int) -> dict:
             visited[tuple(int(v) for v in env.robot.position)] += 1
             steps += 1
             done = terminated or truncated
+            if info.get("slipped"):
+                slips[f"{env.map.name}/{info['slip_kind']}"] += 1
         outcome = "success" if info.get("reached_goal") else "collision" if info.get("hit_obstacle") else "timeout"
         per_map[env.map.name][outcome] += 1
+        if info.get("slip_collision"):
+            slips[f"{env.map.name}/slide_collision"] += 1
         if outcome == "success" and 0 < optimal < float("inf"):
             ratios[env.map.name].append(steps / optimal)
         if outcome == "timeout" and visited.most_common(1)[0][1] >= LOOP_VISITS:
             loops += 1
-    return {"per_map": {m: dict(c) for m, c in per_map.items()},
-            "steps_ratio_median": {m: float(np.median(r)) for m, r in ratios.items()},
-            "timeout_loops": loops, "action_masking": masking}
+    result = {"per_map": {m: dict(c) for m, c in per_map.items()},
+              "steps_ratio_median": {m: float(np.median(r)) for m, r in ratios.items()},
+              "timeout_loops": loops, "action_masking": masking}
+    if env.slip_model is not None:
+        result["slips"] = dict(slips) # "<map>/<kind>" -> count over all episodes; "<map>/slide_collision" -> episodes
+    return result
 
 
 def evaluate(test: int, episodes: int = 1000, seed: int = 0) -> dict:

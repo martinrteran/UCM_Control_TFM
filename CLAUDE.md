@@ -45,7 +45,7 @@ wandb sync --sync-all
 ```
 
 ```bash
-# Run the unit tests (map, robots, environments, rewards; ~3 s)
+# Run the unit tests (map, robots, environments, rewards, slips; ~10 s)
 pytest
 ```
 
@@ -76,6 +76,8 @@ python scripts/inspect_checkpoint.py checkpoints/Test/24/
 
 `BaseGridEnv` composes these into a Gymnasium env and holds everything shared (map selection, seeded start/goal sampling, end-of-episode rules, rendering; `reset()` info gives `map`, `optimal_steps`, `dist2goal`). Subclasses only define the observation: `Grid_Robot_Env` (top-N LIDAR readings by distance), `Grid_Robot_Sections_Env` (nearest reading per angular section) and `Grid_Robot_Sections_Env_MultiMap` (sections over several maps), each followed by `[dist_to_goal, angle_to_goal]`. All angles are egocentric (0 = where the robot faces, counter-clockwise). The **reward function is passed in at construction time** — there is no hard-coded reward. The contract is in `core/rewards.py`: the env decides the end of the episode (goal → `terminated`; collision or step limit → `truncated`), builds a `StepContext` and calls a `RewardFunction` (e.g. `ProgressReward`), which only scores the step (its progress term can use the Euclidean or the BFS/geodesic distance; the env computes a goal distance field each reset). An optional `SuccessCurriculum` (`core/curriculum.py`, `BaseGridEnv(curriculum=...)`) restricts maps and goal distance per stage and advances on the success rate. `info['action_mask']` (from `Robot.valid_actions`) lists the moves that don't collide; `TrainerConfig(action_masking=True)` makes `PPOAgent` choose only among them.
 
+**Slippery floors**: `GridTerrain` patches fill `GridMap.friction` (μ in [0, 1], default 1; JSON key `"terrains"`, optional), separate from the occupancy grid. An optional `SlipModel` (`core/slip.py`, `BaseGridEnv(slip_model=...)`) makes moves slip by maneuver relative to the robot's momentum (straight → overshoot, start → stay, turn → diagonal, reverse → drag; optional lateral) with `p = clip(gain·(demand − μ), 0, max_prob)`; a slide into an obstacle is a collision by default. Slips use their own RNG. `terrain_obs="proprio"|"neighbors"` appends momentum, a slipped flag and noisy μ estimates to the flat observation.
+
 **Agents** (`agents/`): Three-level hierarchy:
 1. `BaseRLAgent` (abstract) — handles device placement, optimizer init, replay buffer, gradient clipping, save/load, and the episode hooks the trainer uses (`on_episode_start`, `act`, `observe`, `on_episode_end`, `episode_metrics`, `train_on_step`). Defaults are off-policy (replay buffer, train every `eps_step`); the PPO agents keep the episode and train in `on_episode_end`.
 2. Algorithm-specific agents (`GridAgent`, `PPOAgent`, `PPOGRUAgent`, `RecurrentPPOAgent`, `SACDiscreteAgent`, `A2CAgent`, `DQNAgent`) that implement `select_action`, `train_step`, and `_compute_loss`.
@@ -104,7 +106,7 @@ Agent configuration uses typed dataclasses in `agents/utils.py`: `RLConfig` (bas
 These YAML files are not wired into the current training scripts automatically; scripts configure agents inline via dataclasses.
 
 ### Maps (`maps/` and `src/tfm_control_ucm/maps/`)
-JSON files define the grid dimensions and obstacle list. Load with `GridMap.load("path/to/map.json")`. `./maps/` (used by current experiments) has `map_obstacle_free.json`, `map_simple.json`, `map_1_obstacle.json` and `map_4_square_obstacle.json`; `src/tfm_control_ucm/maps/` only has the first two.
+JSON files define the grid dimensions and obstacle list. Load with `GridMap.load("path/to/map.json")`. `./maps/` (used by current experiments) has `map_obstacle_free.json`, `map_simple.json`, `map_1_obstacle.json` and `map_4_square_obstacle.json`, plus their `*_slippery.json` versions (same obstacles, ice/wet terrain patches; tests 33+); `src/tfm_control_ucm/maps/` only has the first two.
 
 ## Key Patterns
 
