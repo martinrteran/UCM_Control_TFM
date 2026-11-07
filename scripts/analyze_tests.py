@@ -52,7 +52,8 @@ def ensure_eval(test: int, episodes: int, seed: int) -> dict:
 
 
 def success_counts(result_mode: dict, map_name=None):
-    maps = [map_name] if map_name else list(result_mode["per_map"])
+    """(successes, episodes) over all maps, or of one map; a map also matches its "_slippery" version (tests 33+)."""
+    maps = [m for m in result_mode["per_map"] if m in (map_name, f"{map_name}_slippery")] if map_name else list(result_mode["per_map"])
     wins = sum(result_mode["per_map"].get(m, {}).get("success", 0) for m in maps)
     n = sum(sum(result_mode["per_map"].get(m, {}).values()) for m in maps)
     return wins, n

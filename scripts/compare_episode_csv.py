@@ -60,14 +60,22 @@ def plot_success(runs, window, out):
     plt.close(fig)
 
 
+def _base_map(name: str) -> str:
+    """Map name without the "_slippery" suffix, so a map and its slippery version share a panel."""
+    return name[:-len("_slippery")] if name.endswith("_slippery") else name
+
+
 def plot_success_per_map(runs, window, out):
-    maps = sorted({c for df in runs.values() for c in df.columns if c.startswith("Success/Map/")})
+    maps = sorted({_base_map(c.split("/", 2)[-1]) for df in runs.values() for c in df.columns if c.startswith("Success/Map/")})
     fig, axes = plt.subplots(2, 2, figsize=(13, 7.5), sharex=True, sharey=True)
-    for ax, col in zip(axes.flat, maps):
+    for ax, base in zip(axes.flat, maps):
         for color, (label, df) in zip(COLORS, runs.items()):
-            series = df[col].dropna()
-            ax.plot(series.index, series.rolling(window // 4, min_periods=20).mean(), color=color, lw=1.6, label=label)
-        ax.set(title=col.split("/")[-1], ylim=(0, 1.02))
+            cols = [c for c in df.columns if c.startswith("Success/Map/") and _base_map(c.split("/", 2)[-1]) == base]
+            if not cols: continue # This run did not train on the map
+            series = df[cols[0]].dropna()
+            suffix = " (slippery)" if cols[0].endswith("_slippery") else ""
+            ax.plot(series.index, series.rolling(window // 4, min_periods=20).mean(), color=color, lw=1.6, label=label + suffix)
+        ax.set(title=base, ylim=(0, 1.02))
         ax.grid(alpha=0.3)
     for ax in axes[1]: ax.set_xlabel("Episode")
     for ax in axes[:, 0]: ax.set_ylabel(f"Success (rolling {window // 4} episodes of the map)")
