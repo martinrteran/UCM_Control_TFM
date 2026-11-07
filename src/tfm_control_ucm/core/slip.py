@@ -86,6 +86,9 @@ class SlipEvent(NamedTuple):
     momentum: Vec
 
 
+NO_SLIP = SlipEvent("none", "", 0.0, (), (0, 0)) # A step without a slip model, a turn in place or a plain collision
+
+
 @dataclass
 class SlipModel:
     """

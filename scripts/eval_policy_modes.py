@@ -73,7 +73,7 @@ def evaluate_mode(test: int, mode: str, episodes: int, seed: int) -> dict:
     result = {"per_map": {m: dict(c) for m, c in per_map.items()},
               "steps_ratio_median": {m: float(np.median(r)) for m, r in ratios.items()},
               "timeout_loops": loops, "action_masking": masking}
-    if env.slip_model is not None:
+    if getattr(env, "slip_model", None) is not None:
         result["slips"] = dict(slips) # "<map>/<kind>" -> count over all episodes; "<map>/slide_collision" -> episodes
     return result
 

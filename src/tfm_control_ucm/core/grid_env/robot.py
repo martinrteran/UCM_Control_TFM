@@ -102,31 +102,6 @@ class Robot(ABC):
         """
         raise NotImplementedError("This method should be implemented by subclasses.")
 
-    def displacement(self, action: Any) -> Tuple[int, int]:
-        """
-        World displacement (dc, dr) the action intends, without moving the robot.
-
-        (0, 0) for actions that do not translate the robot (e.g. turning in place).
-        Used by the slip model, which works on world vectors whatever the robot.
-        """
-        raise NotImplementedError(f"{type(self).__name__} does not implement displacement(), needed for slipping")
-
-    def translate(self, map: GridMap, dc: int, dr: int) -> bool:
-        """
-        Move the robot by (dc, dr) cells without changing its orientation, if the
-        target cell is free. Used to apply slides (see core/slip.py).
-
-        Returns
-        -------
-        bool
-            True if the robot moved, False if the target cell is a wall or an obstacle.
-        """
-        c, r = self.position
-        nr, nc = r + dr, c + dc
-        if not map.is_free(nr, nc): return False
-        self.position = (nc, nr)
-        return True
-
     @abstractmethod
     def move(self, map: GridMap, direction: Any) -> bool:
         """
@@ -251,14 +226,6 @@ class GridRobot(Robot):
 
         return moved  # collision
 
-    def displacement(self, action: int) -> Tuple[int, int]:
-        """Forward moves one cell in the current orientation; turns do not translate the robot."""
-        if not isinstance(action, (int, np.integer)) or not 0 <= action < self.NUM_ACTIONS:
-            raise ValueError(f"Invalid direction {action}. Must be an integer in [0, {self.NUM_ACTIONS})")
-        if action != 0: return (0, 0)
-        dc, dr = self.orientation.get_value()
-        return (int(dc), int(dr))
-
     def valid_actions(self, map: GridMap) -> np.ndarray:
         """Turning is always valid; moving forward only if the cell in front is free."""
         dc, dr = self.orientation.get_value()
@@ -336,27 +303,6 @@ class GridRobotNotTurning(Robot):
     s_dirs_pos = [dir.value for dir in s_directions]
     s_dirs_names = list(Direction.__members__.keys())
 
-    def displacement(self, direction: DirectionType) -> Tuple[int, int]:
-        """
-        (dc, dr) of an absolute direction given as an action index, a Direction,
-        its name or a coordinate tuple.
-
-        Raises
-        ------
-        ValueError
-            If the direction cannot be parsed or is out of bounds.
-        """
-        if direction and isinstance(direction, str) and direction.lower() not in self.s_dirs_names:
-            raise ValueError(f"Invalid direction {direction}. Must be one of {', '.join(self.s_dirs_names)}")
-        if direction and isinstance(direction, Direction) and direction not in Direction:
-            raise ValueError(f"Invalid direction {direction}. Must be one of {', '.join(self.s_dirs_names)}")
-        if isinstance(direction, np.integer): direction = int(direction) # Actions sampled from gym spaces are numpy integers
-        if isinstance(direction, int) and (direction < 0 or direction >= len(self.s_directions)):
-            raise ValueError(f"Invalid direction {direction}. Must be an integer in [0, {len(self.s_directions)})")
-
-        dc, dr  = direction.value if isinstance(direction, Direction) else self.s_dirs_pos[direction] if isinstance(direction, int) else Direction[direction].value if isinstance(direction, str) else direction
-        return (int(dc), int(dr))
-
     def valid_actions(self, map: GridMap) -> np.ndarray:
         """A move is valid if the target cell is inside the map and free."""
         c, r = self.position
@@ -387,7 +333,15 @@ class GridRobotNotTurning(Robot):
         ValueError
             If the provided direction cannot be parsed or is out of bounds.
         """
-        dc, dr = self.displacement(direction)
+        if direction and isinstance(direction, str) and direction.lower() not in self.s_dirs_names: 
+            raise ValueError(f"Invalid direction {direction}. Must be one of {', '.join(self.s_dirs_names)}")
+        if direction and isinstance(direction, Direction) and direction not in Direction: 
+            raise ValueError(f"Invalid direction {direction}. Must be one of {', '.join(self.s_dirs_names)}")
+        if isinstance(direction, np.integer): direction = int(direction) # Actions sampled from gym spaces are numpy integers
+        if isinstance(direction, int) and (direction < 0 or direction >= len(self.s_directions)):
+            raise ValueError(f"Invalid direction {direction}. Must be an integer in [0, {len(self.s_directions)})")
+
+        dc, dr  = direction.value if isinstance(direction, Direction) else self.s_dirs_pos[direction] if isinstance(direction, int) else Direction[direction].value if isinstance(direction, str) else direction
         c, r = self.position
         
         # The 0,0 is on the top left corner, so we need to invert the row direction. X is the column, Y is the row

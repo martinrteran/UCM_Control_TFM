@@ -33,16 +33,11 @@ from tensordict import TensorDict
 from tfm_control_ucm.renderers.grid_renderer import PygameRenderer, PygameRenderer_Image_Lidar
 from tfm_control_ucm.core.rewards import RewardCallable, StepContext, evaluate_reward, summarize_components
 from tfm_control_ucm.core.curriculum import SuccessCurriculum
-from tfm_control_ucm.core.slip import SlipModel, SlipEvent
 from tfm_control_ucm.utils.path_planner import PathPlanner
 
 def _wrap_angle(angle):
     """Wrap an angle (radians) to (-pi, pi]."""
     return np.arctan2(np.sin(angle), np.cos(angle))
-
-# Values appended to the observation for each terrain_obs mode (see BaseGridEnv._terrain_features)
-TERRAIN_OBS_SIZES = {"none": 0, "proprio": 4, "neighbors": 8}
-_NO_SLIP = SlipEvent("none", "", 0.0, (), (0, 0))
 
 class BaseGridEnv(gym.Env, ABC):
     """
@@ -83,20 +78,6 @@ class BaseGridEnv(gym.Env, ABC):
         If given, its current stage limits the maps (picked at random among the
         stage's) and the start-goal distance, and it is told the outcome of every
         episode. info['curriculum_stage'] reports the stage.
-    slip_model : SlipModel, optional
-        If given, moves can slip depending on the grip of the cell the robot stands
-        on (GridMap.friction) and on the maneuver relative to its momentum
-        (core/slip.py). Without it the dynamics are deterministic, as before.
-        Slips use their own random generator, seeded from reset(seed=...), so the
-        sequence of maps and start/goal positions does not depend on them.
-    terrain_obs : str, optional
-        Proprioceptive values appended to the (flat) observation:
-        "none" (default); "proprio": [momentum forward, momentum left, slipped on the
-        last step, estimated grip of the current cell] (what odometry + IMU give a real
-        robot); "neighbors": proprio + estimated grip of the front, left, back and
-        right cells (like a camera-based terrain classifier). Egocentric.
-    terrain_obs_noise : float, optional
-        Standard deviation of the Gaussian noise of the grip estimates (clipped to [0, 1]).
     """
     metadata = {"render_modes": ["human"], "render_fps": 10}
     _min_num_rays = 8
@@ -107,8 +88,6 @@ class BaseGridEnv(gym.Env, ABC):
     # Before test 25 the goal angle was atan2(row_diff, col_diff): mirrored with respect to the lidar
     # angles. Only for evaluating checkpoints trained that way (scripts/eval_agent.py sets it).
     _legacy_goal_angle = False
-    # True if _get_observation returns a 1-D array (the declared space may still be (N+1, 2)); terrain_obs needs it
-    _flat_observation = False
 
     def __init__(self, *,
                 maps: Iterable[GridMap],
@@ -119,10 +98,7 @@ class BaseGridEnv(gym.Env, ABC):
                 render_mode: Optional[str] = None,
                 cell_size: int = 32,
                 random_map: bool = True,
-                curriculum: Optional[SuccessCurriculum] = None,
-                slip_model: Optional[SlipModel] = None,
-                terrain_obs: str = "none",
-                terrain_obs_noise: float = 0.05
+                curriculum: Optional[SuccessCurriculum] = None
                 ) -> None:
         if not isinstance(maps, Iterable): raise TypeError("The maps must be an iterable of GridMap instances")
         maps = list(maps)
@@ -132,9 +108,6 @@ class BaseGridEnv(gym.Env, ABC):
         if not callable(reward_fn): raise TypeError("The reward_fn must be a RewardFunction or a callable taking a StepContext")
         self._check_lidar_config(lidar_config)
         if curriculum is not None: curriculum.check_maps([m.name for m in maps])
-        if slip_model is not None and not isinstance(slip_model, SlipModel): raise TypeError("The slip_model must be of type SlipModel")
-        if terrain_obs not in TERRAIN_OBS_SIZES: raise ValueError(f"terrain_obs must be one of {list(TERRAIN_OBS_SIZES)}")
-        if terrain_obs_noise < 0: raise ValueError("terrain_obs_noise must be >= 0")
 
         super().__init__()
         self.maps = maps
@@ -144,9 +117,6 @@ class BaseGridEnv(gym.Env, ABC):
         self.curriculum = curriculum
         self.robot = robot
         self.reward_fn = reward_fn
-        self.slip_model = slip_model
-        self.terrain_obs = terrain_obs
-        self.terrain_obs_noise = float(terrain_obs_noise)
         self.lidar = GridLidar(**lidar_config) if lidar_config else self._default_lidar()
         self.max_steps = max_iteration_steps
         self.render_mode = render_mode
@@ -157,22 +127,15 @@ class BaseGridEnv(gym.Env, ABC):
         self._map_diagonal = max(np.sqrt(np.sum(np.array(m.grid.shape) **2)) for m in self.maps)
 
         self.action_space = spaces.Discrete(robot.NUM_ACTIONS, start=0, dtype=np.int8)
-        self.observation_space = self._extend_observation_space(self._build_observation_space())
+        self.observation_space = self._build_observation_space()
 
         self.steps = 0
         self.goal_pos = np.array([0, 0])
         self._previous_action = -1 # Do nothing
         self._previous_obs = None
-        self._base_obs = None # Lidar + goal part of the last observation (without the terrain values)
         self._previous_dist_to_goal = 0.0
         self._previous_geodesic_dist_to_goal = float("inf")
         self._goal_field = np.full(self.map.grid.shape, np.inf)
-
-        # Dynamics state: last displacement (dc, dr) of the robot, (0, 0) when stopped, and whether it slipped
-        self._momentum = (0, 0)
-        self._last_slipped = False
-        self._slip_rng: Optional[np.random.Generator] = None
-        self._obs_rng: Optional[np.random.Generator] = None
 
     @classmethod
     def _check_lidar_config(cls, lidar_config: Optional[Dict]):
@@ -206,16 +169,6 @@ class BaseGridEnv(gym.Env, ABC):
     # ------------------------------------------------------------
     # Spaces
     # ------------------------------------------------------------
-    def _extend_observation_space(self, space: spaces.Box) -> spaces.Box:
-        """Append the bounds of the terrain values (terrain_obs) to the subclass's observation space."""
-        n = TERRAIN_OBS_SIZES[self.terrain_obs]
-        if n == 0: return space
-        if not self._flat_observation: raise ValueError(f"terrain_obs='{self.terrain_obs}' needs a flat observation; {type(self).__name__}'s is not")
-        low = np.array([-1.0, -1.0] + [0.0] * (n - 2), dtype=np.float32)
-        high = np.ones(n, dtype=np.float32)
-        return spaces.Box(low=np.concatenate([space.low.ravel(), low]).astype(np.float32),
-                          high=np.concatenate([space.high.ravel(), high]).astype(np.float32))
-
     def get_observation_shape(self):
         return self.observation_space.shape
 
@@ -251,49 +204,8 @@ class BaseGridEnv(gym.Env, ABC):
         return float(self._goal_field[r, c])
 
     def _optimal_steps(self) -> float:
-        """Shortest path length from the robot to the goal (wavefront BFS, turns not counted, friction ignored); inf if unreachable."""
+        """Shortest path length from the robot to the goal (wavefront BFS, turns not counted); inf if unreachable."""
         return self._geodesic_dist_to_goal()
-
-    def _robot_cell(self):
-        """(col, row) of the robot as ints."""
-        c, r = (int(v) for v in self.robot.position)
-        return c, r
-
-    # ------------------------------------------------------------
-    # Observation
-    # ------------------------------------------------------------
-    def _observe(self) -> np.ndarray:
-        """Subclass observation (lidar + goal) followed by the terrain values of terrain_obs."""
-        base = self._get_observation()
-        self._base_obs = np.asarray(base)
-        if self.terrain_obs == "none": return base
-        return np.concatenate([np.asarray(base, dtype=np.float32).ravel(), self._terrain_features()])
-
-    def _estimated_friction(self, row: int, col: int) -> float:
-        """Grip of a cell as a sensor would estimate it: true value + Gaussian noise, clipped to [0, 1]."""
-        friction = self.map.friction_at(row, col)
-        if self.terrain_obs_noise > 0 and self._obs_rng is not None:
-            friction += float(self._obs_rng.normal(0.0, self.terrain_obs_noise))
-        return float(np.clip(friction, 0.0, 1.0))
-
-    def _terrain_features(self) -> np.ndarray:
-        """
-        Egocentric proprioceptive values (terrain_obs):
-        [momentum forward, momentum left, slipped on the last step, grip here]
-        and, for "neighbors", the grip of the front, left, back and right cells.
-        """
-        heading = self.robot.heading
-        cos_h, sin_h = np.cos(heading), np.sin(heading)
-        dc, dr = self._momentum
-        x, y = dc, -dr # Lidar convention: x = east, y = north (rows grow downwards)
-        features = [x * cos_h + y * sin_h, -x * sin_h + y * cos_h, float(self._last_slipped)]
-        c, r = self._robot_cell()
-        features.append(self._estimated_friction(r, c))
-        if self.terrain_obs == "neighbors":
-            for ex, ey in ((1, 0), (0, 1), (-1, 0), (0, -1)): # front, left, back, right in the robot frame
-                wx, wy = ex * cos_h - ey * sin_h, ex * sin_h + ey * cos_h
-                features.append(self._estimated_friction(r - int(round(wy)), c + int(round(wx))))
-        return np.asarray(features, dtype=np.float32)
 
     # ------------------------------------------------------------
     # Episode
@@ -329,11 +241,6 @@ class BaseGridEnv(gym.Env, ABC):
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
-        if seed is not None or self._slip_rng is None:
-            # Slips and sensor noise get their own generators: the maps and start/goal positions
-            # (self.np_random) stay the same for every agent evaluated with the same seed
-            slip_seed, obs_seed = np.random.SeedSequence(seed).spawn(2)
-            self._slip_rng, self._obs_rng = np.random.default_rng(slip_seed), np.random.default_rng(obs_seed)
         previous_map = self.map
         self.map = self._select_map()
         if self.map is not previous_map: self.renderer = None # The renderer draws a single map
@@ -342,10 +249,8 @@ class BaseGridEnv(gym.Env, ABC):
         self.goal_pos = self._sample_goal()
         self._compute_goal_field()
         self.steps = 0
-        self._momentum = (0, 0) # The robot starts stopped
-        self._last_slipped = False
 
-        obs = self._observe()
+        obs = self._get_observation()
         self._start_episode(obs)
         info = {'map': self.map.name, 'optimal_steps': self._optimal_steps(), 'dist2goal': self._dist_to_goal(),
                 'action_mask': self.robot.valid_actions(self.map)}
@@ -355,54 +260,12 @@ class BaseGridEnv(gym.Env, ABC):
 
     def step(self, action: int):
         self.steps += 1
-        start_c, start_r = self._robot_cell()
-        friction = self.map.friction_at(start_r, start_c)
 
-        if self.slip_model is None:
-            moved = self.robot.move(self.map, action)
-            hit_obstacle, slip, slip_collision = not moved, _NO_SLIP, False
-            end_c, end_r = self._robot_cell()
-            self._momentum = (end_c - start_c, end_r - start_r) # (0, 0) after a collision or a turn in place
-        else:
-            hit_obstacle, slip, slip_collision = self._move_with_slip(action, friction)
-        self._last_slipped = slip.kind != "none"
+        moved = self.robot.move(self.map, action)
 
-        obs = self._observe()
-        reward, terminated, truncated, info = self._finish_step(action, obs, hit_obstacle=hit_obstacle,
-                                                                slip=slip, slip_collision=slip_collision, friction=friction)
+        obs = self._get_observation()
+        reward, terminated, truncated, info = self._finish_step(action, obs, hit_obstacle=not moved)
         return obs, reward, terminated, truncated, info
-
-    def _move_with_slip(self, action: int, friction: float):
-        """
-        Move the robot with the slip model; updates the momentum.
-
-        A move into a wall is a collision, as without slipping, and turning in place
-        never slips. Otherwise the slip model picks what happens (core/slip.py) and
-        each displacement of its path must land on a free cell: if one does not, the
-        slide hit something, which is a collision when into_obstacle is "collide"
-        (the robot stays on the last free cell either way).
-
-        Returns
-        -------
-        tuple
-            (hit_obstacle, SlipEvent, slip_collision)
-        """
-        assert self.slip_model is not None
-        intended = self.robot.displacement(action)
-        c, r = self._robot_cell()
-        if intended == (0, 0) or not self.map.is_free(r + intended[1], c + intended[0]):
-            moved = self.robot.move(self.map, action) # Turn in place, or plain collision
-            self._momentum = (0, 0)
-            return not moved, _NO_SLIP, False
-
-        event = self.slip_model.sample(friction, self._momentum, intended, self._slip_rng) # type: ignore
-        for dc, dr in event.path:
-            if not self.robot.translate(self.map, dc, dr):
-                self._momentum = (0, 0) # Stopped against the obstacle
-                collided = self.slip_model.into_obstacle == "collide"
-                return collided, event, collided
-        self._momentum = event.momentum
-        return False, event, False
 
     def _start_episode(self, obs: np.ndarray):
         """Reset the per-episode memory used to build the next StepContext."""
@@ -411,8 +274,7 @@ class BaseGridEnv(gym.Env, ABC):
         self._previous_dist_to_goal = self._dist_to_goal()
         self._previous_geodesic_dist_to_goal = self._geodesic_dist_to_goal()
 
-    def _finish_step(self, action: int, obs: np.ndarray, hit_obstacle: bool, slip: SlipEvent = _NO_SLIP,
-                     slip_collision: bool = False, friction: float = GridMap.DEFAULT_FRICTION):
+    def _finish_step(self, action: int, obs: np.ndarray, hit_obstacle: bool):
         """
         Decide termination, score the step and update the per-episode memory.
 
@@ -427,13 +289,7 @@ class BaseGridEnv(gym.Env, ABC):
         obs : np.ndarray
             Observation after the step.
         hit_obstacle : bool
-            True if the robot hit a wall or an obstacle (also when a slide did, with into_obstacle="collide").
-        slip : SlipEvent, optional
-            What the slip model did this step.
-        slip_collision : bool, optional
-            The collision was caused by a slide.
-        friction : float, optional
-            Grip of the cell the robot stood on when the step started.
+            True if the robot could not move because of a wall or an obstacle.
 
         Returns
         -------
@@ -442,8 +298,7 @@ class BaseGridEnv(gym.Env, ABC):
         """
         dist_to_goal = self._dist_to_goal()
         geodesic_dist_to_goal = self._geodesic_dist_to_goal()
-        base_obs = self._base_obs if self._base_obs is not None else obs # Lidar + goal, without the terrain values
-        rays = np.asarray(base_obs).reshape((-1, 2))[:-1, 0]
+        rays = np.asarray(obs).reshape((-1, 2))[:-1, 0]
         detected = rays[rays >= 0]
         min_obstacle_dist = float(detected.min()) if detected.size else float(self.lidar.max_range)
 
@@ -461,8 +316,7 @@ class BaseGridEnv(gym.Env, ABC):
                           robot_pos=np.asarray(self.robot.position), goal_pos=np.asarray(self.goal_pos),
                           map_diagonal=float(self._map_diagonal), lidar_max_range=float(self.lidar.max_range),
                           geodesic_dist_to_goal=geodesic_dist_to_goal,
-                          previous_geodesic_dist_to_goal=self._previous_geodesic_dist_to_goal,
-                          slipped=slip.kind != "none", slip_kind=slip.kind, friction=float(friction))
+                          previous_geodesic_dist_to_goal=self._previous_geodesic_dist_to_goal)
         reward, components = evaluate_reward(self.reward_fn, ctx)
 
         info = {'action_mask': self.robot.valid_actions(self.map), # Valid actions in the new state
@@ -470,9 +324,6 @@ class BaseGridEnv(gym.Env, ABC):
                 'dist2goal': dist_to_goal, 'min_dist': min_obstacle_dist, 'steps': self.steps,
                 'goal_pos': self.goal_pos, 'robot_pos': self.robot.position, 'map': self.map.name,
                 'reward': reward, 'reward_components': components, **summarize_components(components)}
-        if self.slip_model is not None:
-            info.update({'slipped': slip.kind != "none", 'slip_kind': slip.kind, 'slip_maneuver': slip.maneuver,
-                         'slip_probability': slip.probability, 'slip_collision': slip_collision, 'friction': float(friction)})
         if self.curriculum is not None:
             info['curriculum_stage'] = self.curriculum.stage_idx # Stage this episode was played in
             if terminated or truncated:
@@ -488,9 +339,9 @@ class BaseGridEnv(gym.Env, ABC):
     # Rendering
     # ------------------------------------------------------------
     def render(self):
-        if self.render_mode != 'human' or self._base_obs is None: return
+        if self.render_mode != 'human' or self._previous_obs is None: return
         if self.renderer is None: self.renderer = PygameRenderer(self.map, cell_size=self.cell_size)
-        rays = np.asarray(self._base_obs, dtype=np.float64).reshape((-1, 2))[:-1].copy()
+        rays = np.asarray(self._previous_obs, dtype=np.float64).reshape((-1, 2))[:-1].copy()
         rays[:, 1] += self.robot.heading # The renderer draws in the world frame
         self.renderer.handle_events()
         self._render_frame(self.renderer, rays)
@@ -514,16 +365,12 @@ class Grid_Robot_Env(BaseGridEnv):
                 max_iteration_steps: Union[int,np.integer] = 10_000,
                 render_mode: Optional[str] = None,
                 cell_size: int = 32,
-                curriculum: Optional[SuccessCurriculum] = None,
-                slip_model: Optional[SlipModel] = None,
-                terrain_obs: str = "none",
-                terrain_obs_noise: float = 0.05
+                curriculum: Optional[SuccessCurriculum] = None
                 ) -> None:
         if not isinstance(map, GridMap): raise TypeError("The map must be of type GridMap")
         super().__init__(maps=[map], robot=robot, reward_fn=reward_fn, lidar_config=lidar_config,
                          max_iteration_steps=max_iteration_steps, render_mode=render_mode, cell_size=cell_size,
-                         curriculum=curriculum, slip_model=slip_model, terrain_obs=terrain_obs,
-                         terrain_obs_noise=terrain_obs_noise)
+                         curriculum=curriculum)
 
     def _default_lidar(self) -> GridLidar:
         return GridLidar()
@@ -556,7 +403,6 @@ class Grid_Robot_Sections_Env(BaseGridEnv):
     """
     _min_num_rays = 12
     _min_num_sections = 4
-    _flat_observation = True
     _max_noise_std = 0.5
     _max_range = 100
     _min_separation_distance = 10
@@ -570,16 +416,12 @@ class Grid_Robot_Sections_Env(BaseGridEnv):
                 render_mode: Optional[str] = None,
                 cell_size: int = 32,
                 num_sections: int = _min_num_sections,
-                curriculum: Optional[SuccessCurriculum] = None,
-                slip_model: Optional[SlipModel] = None,
-                terrain_obs: str = "none",
-                terrain_obs_noise: float = 0.05
+                curriculum: Optional[SuccessCurriculum] = None
                 ) -> None:
         if not isinstance(map, GridMap): raise TypeError("The map must be of type GridMap")
         self._setup(maps=[map], robot=robot, reward_fn=reward_fn, lidar_config=lidar_config,
                     max_iteration_steps=max_iteration_steps, render_mode=render_mode, cell_size=cell_size,
-                    num_sections=num_sections, random_map=True, curriculum=curriculum, slip_model=slip_model,
-                    terrain_obs=terrain_obs, terrain_obs_noise=terrain_obs_noise)
+                    num_sections=num_sections, random_map=True, curriculum=curriculum)
 
     def _setup(self, *, num_sections: int, **kwargs):
         if num_sections < self._min_num_sections or num_sections % 4 != 0: raise ValueError(f"The number of sections must be greater or equal to {self._min_num_sections} and a multiple of 4")
@@ -647,15 +489,11 @@ class Grid_Robot_Sections_Env_MultiMap(Grid_Robot_Sections_Env):
                 cell_size: int = 32,
                 num_sections: int = Grid_Robot_Sections_Env._min_num_sections,
                 random_map: bool = True,
-                curriculum: Optional[SuccessCurriculum] = None,
-                slip_model: Optional[SlipModel] = None,
-                terrain_obs: str = "none",
-                terrain_obs_noise: float = 0.05
+                curriculum: Optional[SuccessCurriculum] = None
                 ) -> None:
         self._setup(maps=maps, robot=robot, reward_fn=reward_fn, lidar_config=lidar_config,
                     max_iteration_steps=max_iteration_steps, render_mode=render_mode, cell_size=cell_size,
-                    num_sections=num_sections, random_map=random_map, curriculum=curriculum, slip_model=slip_model,
-                    terrain_obs=terrain_obs, terrain_obs_noise=terrain_obs_noise)
+                    num_sections=num_sections, random_map=random_map, curriculum=curriculum)
 
 # class Grid_Robot_Env_Image_lidar(gym.Env):
 #     """

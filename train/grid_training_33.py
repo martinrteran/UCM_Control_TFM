@@ -2,8 +2,10 @@
 Test 33 — test 31 on slippery maps.
 
 The four maps of test 31 with the same obstacles plus patches of wet floor
-(mu = 0.5) and ice (mu = 0.2) (maps/*_slippery.json). Moves can slip
-(core/slip.py): the kind of slip depends on the maneuver relative to the
+(mu = 0.5) and ice (mu = 0.2) (maps/*_slippery.json, loaded as SlipperyGridMap).
+The robot is a SlipperyGridRobotNotTurning in a
+Slippery_Grid_Robot_Sections_Env_MultiMap (new classes; the plain map, robot and
+environment are unchanged). Moves can slip (core/slip.py): the kind of slip depends on the maneuver relative to the
 robot's momentum (straight -> overshoot, start -> wheels spin, turn -> diagonal,
 reverse -> drag) and its probability on the grip of the cell,
 p = clip(gain * (demand - mu), 0, max_prob), so the normal floor never slips.
@@ -25,9 +27,9 @@ from tfm_control_ucm.core.agents.utils import PPOConfig, RLAlgorithm
 from tfm_control_ucm.core.rewards import ProgressReward
 from tfm_control_ucm.core.slip import SLIP_KINDS, SlipModel
 import tfm_control_ucm.core.training.TrainingManager as training_manager
-import tfm_control_ucm.core.grid_env.environment as grid_env
-import tfm_control_ucm.core.grid_env.map as maps
-import tfm_control_ucm.core.grid_env.robot as robot
+from tfm_control_ucm.core.grid_env.slippery_environment import Slippery_Grid_Robot_Sections_Env_MultiMap
+from tfm_control_ucm.core.grid_env.slippery_map import SlipperyGridMap
+from tfm_control_ucm.core.grid_env.slippery_robot import SlipperyGridRobotNotTurning
 import torch
 import numpy as np
 
@@ -92,9 +94,7 @@ def main():
         torch.manual_seed(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-    mapas = [maps.GridMap.load(path) for path in MAP_PATHS]
-
-    robot_simple = robot.GridRobotNotTurning()
+    mapas = [SlipperyGridMap.load(path) for path in MAP_PATHS]
 
     n_sections = 4 * args.n
     lidar_config = {"num_rays": n_sections * 15, "max_range": 10, "fov": 2 * np.pi, "noise_std": 1e-3, "with_cache": True}
@@ -111,11 +111,12 @@ def main():
                            demand_turn=args.demand_turn, demand_reverse=args.demand_reverse,
                            gain=args.slip_gain, max_prob=args.slip_max_prob, kinds=tuple(args.slip_kinds),
                            lateral_demand=args.lateral_demand, into_obstacle=args.into_obstacle)
+    robot_simple = SlipperyGridRobotNotTurning(slip_model=slip_model)
 
-    env = grid_env.Grid_Robot_Sections_Env_MultiMap(maps=mapas, robot=robot_simple, reward_fn=reward, cell_size=10,
+    env = Slippery_Grid_Robot_Sections_Env_MultiMap(maps=mapas, robot=robot_simple, reward_fn=reward, cell_size=10,
                     max_iteration_steps=args.max_steps, num_sections=n_sections, lidar_config=lidar_config,
                     render_mode="human" if args.render else None,
-                    slip_model=slip_model, terrain_obs=args.terrain_obs, terrain_obs_noise=args.terrain_obs_noise)
+                    terrain_obs=args.terrain_obs, terrain_obs_noise=args.terrain_obs_noise)
     env.reset(seed=args.seed) # Seeds the map selection and the slips; later resets keep the same generators
 
     action_dim = env.get_action_dim()

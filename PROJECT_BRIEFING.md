@@ -11,7 +11,7 @@
 > `.claude/skills/project-briefing/SKILL.md`) or edit this file by hand. Bump the
 > "Last updated" line below.
 
-**Last updated**: 2026-11-07 (by Claude, slippery floors + tests 33-34 scripts) · **Branch**: `Put-all-together` · **Latest commit**: "Slippery floors: terrain friction, maneuver-dependent slip model, tests 33-34" (after `35f3039` "Test 32"). Still untracked: the outputs of tests 26–32 and 311–314 (`runs/`, `checkpoints/`, `plots/`, `logs/`)
+**Last updated**: 2026-11-07 (by Claude, slippery floors moved to new classes) · **Branch**: `Put-all-together` · **Latest commit**: "Slippery floors as new map, robot and environment classes" (after `4b4629b`, whose changes to the shared classes it reverts). Still untracked: the outputs of tests 26–32 and 311–314 (`runs/`, `checkpoints/`, `plots/`, `logs/`)
 
 **Plan to February 2027** (delivery of code + thesis; user's RTX 5060 Ti; no ROS expected): slippery floors in the
 grid (tests 33-34, §2j) → **DQN on the current API** (no DQN run exists since test 25; the thesis is "DQN vs PPO")
@@ -122,15 +122,34 @@ free, turns always valid). Every env `reset`/`step` info has `action_mask`. With
 `_compute_loss`); other agents raise `NotImplementedError`. `eval_agent.py` applies it when the run's
 `config.json` has `"action_masking": true`.
 
-### 2a-quater. Slippery floors (`core/slip.py`, `GridMap.friction`)
+### 2a-quater. Slippery floors (new classes; `GridMap`, the robots, `BaseGridEnv`, `StepContext` and `PygameRenderer` are unchanged)
 
-- **Map**: `GridTerrain(corner, size, friction, name)` patches fill `GridMap.friction` (float, default 1.0 =
-  normal floor; later patch wins on overlap). Optional `"terrains"` key in the JSON (old maps load unchanged).
-  The occupancy `grid` is untouched, so the lidar, the BFS (`optimal_steps`, geodesic distance) and the action
-  mask ignore friction. `str(map)` draws `~` for slippery free cells; the renderer tints them blue. Also fixed:
-  `GridMap.save()` could not serialise obstacles (numpy arrays / objects in the JSON).
-- **Slip model** (`SlipModel`, injected with `BaseGridEnv(slip_model=...)`; `None` = deterministic, exactly as
-  before): the env keeps the robot's **momentum** (last displacement, `(0, 0)` stopped; turning in place stops it).
+**User decision (2026-11-07)**: new features go into **new classes** (subclasses / new modules), not into the
+existing map, robot and environment classes. A first version that modified them was reverted.
+
+| New | File | Extends |
+|---|---|---|
+| `GridTerrain`, `SlipperyGridMap`, `friction_at(map, r, c)` | `core/grid_env/slippery_map.py` | `GridMap` |
+| `SlipperyRobotMixin`, `SlipperyGridRobotNotTurning`, `SlipperyGridRobot` | `core/grid_env/slippery_robot.py` | `GridRobotNotTurning`, `GridRobot` |
+| `Slippery_Grid_Robot_Sections_Env_MultiMap` | `core/grid_env/slippery_environment.py` | `Grid_Robot_Sections_Env_MultiMap` |
+| `SlipperyPygameRenderer` | `renderers/slippery_renderer.py` | `PygameRenderer` |
+| `SlipModel`, `classify_maneuver`, `SlipEvent`, `NO_SLIP` | `core/slip.py` | — |
+
+Shared files that did change: `TrainingManager.py` (counts `info['slipped']` per episode; logs `Slip/Count`,
+`Slip/Collision` and `Config/Slip` only when the env reports slips) and the eval scripts.
+
+- **Map**: `GridTerrain(corner, size, friction, name)` patches fill `SlipperyGridMap.friction` (float, default 1.0 =
+  normal floor; later patch wins on overlap). Optional `"terrains"` key in the JSON: plain map files load as a
+  `SlipperyGridMap` with grip 1 everywhere. The occupancy `grid` is untouched, so the lidar, the BFS
+  (`optimal_steps`, geodesic distance) and the action mask ignore friction. `str()` draws `~` for slippery free
+  cells; `SlipperyPygameRenderer` tints them blue. `SlipperyGridMap.save()` writes valid JSON (note: the plain
+  `GridMap.save()` still cannot serialise obstacles — numpy arrays / objects — not fixed, on purpose).
+- **Robot**: the slipping happens in `SlipperyRobotMixin.move()`. It keeps the **momentum** (last displacement,
+  `(0, 0)` stopped; turning in place stops it), uses the robot's own RNG (`set_rng`), and returns False **only on a
+  collision** (a wheel spin returns True), so `BaseGridEnv.step()`'s `hit_obstacle = not moved` is unchanged.
+  `slip_model=None` = the parent's moves, momentum still tracked. Outcome in `last_slip`, `last_slip_collision`,
+  `last_friction`.
+- **Slip model** (`SlipModel`, given to the robot): each move is classified against the momentum.
   Each move is classified against it — straight → *overshoot* (2 cells), start → *stay* (wheels spin, **not** a
   collision), turn 90° → *diagonal* (through the momentum cell), reverse → *drag* (1 cell in the old direction);
   optional *lateral* drift. `p = clip(gain·(demand − μ), 0, max_prob)` with μ of the cell the step starts on;
@@ -140,18 +159,19 @@ free, turns always valid). Every env `reset`/`step` info has `action_mask`. With
   robot stays on the last free cell; `"stop"` = no collision.
 - **Consequence for masking**: the mask only checks the intended cell, so with `collide` collisions are possible
   again in masked runs (random masked policy on the slippery maps: 107/300 episodes end in a slide collision).
-- **RNG**: slips and sensor noise use their own generators (`SeedSequence(seed).spawn(2)` in `reset(seed)`), so
-  the map / start / goal sequence of a seeded evaluation is the same with or without slips (tested).
-- **Observation** `terrain_obs`: `"none"` (default), `"proprio"` (+4, egocentric: momentum forward/left, slipped on
-  the last step, noisy μ of the current cell — what odometry + IMU give a real robot; user asked for "the most
-  realistic"), `"neighbors"` (+8: also noisy μ of front/left/back/right, like a camera terrain classifier).
-  Noise `terrain_obs_noise` (std, default 0.05). Only for flat-observation envs (`_flat_observation`, Sections).
-  `_finish_step` and `render` now read the lidar from `self._base_obs`, not by parsing `obs`.
-- **Reward**: no friction term (user decision). `StepContext` gained `slipped`, `slip_kind`, `friction`
-  (defaults keep old rewards working). `info` (only with a slip model) has `slipped`, `slip_kind`,
-  `slip_maneuver`, `slip_probability`, `slip_collision`, `friction`. Trainer tags `Slip/Count`, `Slip/Collision`,
-  text `Config/Slip`. `eval_agent.py` / `eval_policy_modes.py` rebuild slip model and `terrain_obs` from
-  `config.json` (`"slip"`, `"terrain_obs"`, `"terrain_obs_noise"`) and count slips / slide collisions.
+- **RNG**: the slippery env's `reset(seed)` seeds the robot's slip generator and the sensor-noise generator with
+  `SeedSequence(seed).spawn(2)`, apart from `np_random`, so the map / start / goal sequence of a seeded evaluation
+  is the same with or without slips (tested).
+- **Observation** `terrain_obs` of the slippery env: `"none"` (default), `"proprio"` (+4, egocentric: momentum
+  forward/left, slipped on the last step, noisy μ of the current cell — what odometry + IMU give a real robot; user
+  asked for "the most realistic"), `"neighbors"` (+8: also noisy μ of front/left/back/right, like a camera terrain
+  classifier). Noise `terrain_obs_noise` (std, default 0.05). The env keeps the lidar + goal part in
+  `self._base_obs` and hands that to the parent's `_start_episode` / `_finish_step`, so the reward's `ctx.obs` /
+  `ctx.previous_obs` and `render` see the usual layout.
+- **Reward**: no friction term (user decision); `StepContext` is unchanged, so rewards cannot see the slip.
+  `info` (only when the robot has a slip model) has `slipped`, `slip_kind`, `slip_maneuver`, `slip_probability`,
+  `slip_collision`, `friction`. `eval_agent.py` builds the slippery env when `config.json` has `"terrain_obs"`
+  (with `"slip"` → `SlipModel`, null → no slips) and counts slips / slide collisions; so does `eval_policy_modes.py`.
 - **Maps**: `maps/*_slippery.json` = the 4 maps with the same obstacles plus ice/wet patches (15-24 % of free
   cells, several next to walls and obstacles); names end in `_slippery`, so per-map tags differ from test 31's.
 - Not done: a friction-aware planner (Dijkstra with expected cost) for `optimal_steps`; the goal only counts if the
@@ -173,7 +193,8 @@ free, turns always valid). Every env `reset`/`step` info has `action_mask`. With
   `_31.py` (action masking, `TrainerConfig(action_masking=True)`).
 - `train/grid_training_32.py` — test 31 with `clip_negative_progress=False` (default of the CLI flag;
   `--clip_negative_progress` restores 31). Trained (§3).
-- `train/grid_training_33.py` — test 31 on the slippery maps with `SlipModel()` (`collide`), observation of 31
+- `train/grid_training_33.py` — test 31 on the slippery maps (`SlipperyGridMap`, `SlipperyGridRobotNotTurning`,
+  `Slippery_Grid_Robot_Sections_Env_MultiMap`) with `SlipModel()` (`collide`), observation of 31
   (`--terrain_obs none`). Slip CLI args `--demand_*`, `--slip_gain`, `--slip_max_prob`, `--slip_kinds`,
   `--lateral_demand`, `--into_obstacle`. `config.json` adds `slip`, `terrain_obs`, `terrain_obs_noise`. Not trained.
 - `train/grid_training_34.py` — test 33 with `--terrain_obs proprio` (obs_dim 22). `--no-slippery --test_number 35`
@@ -241,7 +262,7 @@ obstacles (14, overlapping: 121 occupied cells).
 
 ### 2g. Tests and bug fixes (decoupling phases 0–4)
 
-`pytest` (from the repo root, ~10 s) runs 159 tests in `tests/`
+`pytest` (from the repo root, ~10 s) runs 164 tests in `tests/`
 (`test_map`, `test_robot`, `test_environment`, `test_rewards`, `test_heading`,
 `test_training`, `test_scripts`, `test_curriculum`, `test_action_masking`, `test_slip`). `matplotlib` and `pandas` are installed in `.venv` (not in
 `requirements.txt`). They build tiny
@@ -424,7 +445,7 @@ Only the parts not fully obvious from `CLAUDE.md`, or useful jump points:
 - Observation (`Grid_Robot_Sections_Env[_MultiMap]`): `num_sections` angular LIDAR buckets (each `[nearest_dist, angle]`; empty sections get `[max_range, section_center_angle]`) followed by `[dist_to_goal, angle_to_goal]`. `obs_dim = num_sections*2 + 2`. All angles egocentric, counter-clockwise, 0 = robot heading (east for `GridRobotNotTurning`).
 - `num_sections = 4 * n` (CLI `--n`, default 2 → 8 sections), must be ≥ 4 and a multiple of 4. `lidar num_rays = n_sections*15` so each section has several candidate rays.
 - Reward: `ProgressReward` from `core/rewards.py`, injected by the train script (§2a). Episode end decided by the env: goal within 1 cell → `terminated`; collision or step limit → `truncated`.
-- Optional terrain values after the goal pair (`terrain_obs`, §2a-quater): `proprio` +4, `neighbors` +8.
+- Slippery env only: optional terrain values after the goal pair (`terrain_obs`, §2a-quater): `proprio` +4, `neighbors` +8.
 
 ---
 

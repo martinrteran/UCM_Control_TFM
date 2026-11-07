@@ -31,7 +31,6 @@ class PygameRenderer:
         self.ray_color = ray_color
         self.max_ray_color = (100,120,255)
         self.goal_color = (0, 255, 0)
-        self.slippery_color = (90, 160, 255) # Colour of a cell with friction 0; friction 1 is free_color
 
         width_px, height_px = gridmap.get_size() * cell_size
 
@@ -41,12 +40,6 @@ class PygameRenderer:
     # ------------------------------------------------------------
     # Drawing helpers
     # ------------------------------------------------------------
-    def _floor_color(self, r, c):
-        """free_color on normal floor, towards slippery_color as the friction drops."""
-        friction = self.gridmap.friction_at(r, c) if hasattr(self.gridmap, "friction_at") else 1.0
-        t = 1.0 - min(max(friction, 0.0), 1.0)
-        return tuple(int(f + t * (s - f)) for f, s in zip(self.free_color, self.slippery_color))
-
     def draw_grid(self):
         for r in range(self.gridmap.get_height()):
             for c in range(self.gridmap.get_width()):
@@ -60,7 +53,7 @@ class PygameRenderer:
                 color = (
                     self.obstacle_color
                     if self.gridmap.is_obstacle(r, c)
-                    else self._floor_color(r, c)
+                    else self.free_color
                 )
 
                 pygame.draw.rect(self.screen, color, rect)

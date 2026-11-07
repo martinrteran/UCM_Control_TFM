@@ -44,6 +44,9 @@ from tfm_control_ucm.core.agents.networks import RecurrentGRUPolicy, RecurrentGR
 from tfm_control_ucm.core.agents.utils import RLConfig, RLAlgorithm, PPOConfig, PPORNNConfig
 from tfm_control_ucm.core.rewards import ProgressReward
 from tfm_control_ucm.core.slip import SlipModel
+from tfm_control_ucm.core.grid_env.slippery_environment import Slippery_Grid_Robot_Sections_Env_MultiMap
+from tfm_control_ucm.core.grid_env.slippery_map import SlipperyGridMap
+from tfm_control_ucm.core.grid_env.slippery_robot import SlipperyGridRobot, SlipperyGridRobotNotTurning
 
 
 MAPS_DIR = Path("./maps")
@@ -121,15 +124,20 @@ def load_agent_from_checkpoint(path: str, device: torch.device):
 
 
 def slip_settings(run_config: Optional[dict]):
-    """(SlipModel or None, terrain_obs, terrain_obs_noise) of a run (tests 33+ store them in config.json)."""
-    if not run_config: return None, "none", 0.05
+    """
+    (slippery, SlipModel or None, terrain_obs, terrain_obs_noise) of a run.
+
+    Runs of the slippery environment (tests 33+) store "terrain_obs" in config.json
+    ("slip" may be null: slippery env without slips, e.g. test 35).
+    """
+    if not run_config or "terrain_obs" not in run_config: return False, None, "none", 0.05
     slip_cfg = run_config.get("slip")
     slip_model = SlipModel(**{k: v for k, v in slip_cfg.items() if k != "name"}) if slip_cfg else None
-    return slip_model, run_config.get("terrain_obs", "none"), run_config.get("terrain_obs_noise", 0.05)
+    return True, slip_model, run_config["terrain_obs"], run_config.get("terrain_obs_noise", 0.05)
 
 
 def build_env(args, obs_dim: int, action_dim: int, run_config: Optional[dict]):
-    slip_model, terrain_obs, terrain_obs_noise = slip_settings(run_config)
+    slippery, slip_model, terrain_obs, terrain_obs_noise = slip_settings(run_config)
     if run_config:
         map_paths = run_config["maps"]
         lidar_config = run_config["lidar"]
@@ -149,13 +157,18 @@ def build_env(args, obs_dim: int, action_dim: int, run_config: Optional[dict]):
     if args.max_steps:
         max_steps = args.max_steps
 
-    robot = GridRobot() if action_dim == GridRobot.NUM_ACTIONS else GridRobotNotTurning()
-    env = Grid_Robot_Sections_Env_MultiMap(maps=[GridMap.load(p) for p in map_paths], robot=robot, reward_fn=reward,
-                                           lidar_config=lidar_config, num_sections=num_sections,
-                                           max_iteration_steps=max_steps, cell_size=args.cell_size,
-                                           render_mode="human" if args.render else None,
-                                           slip_model=slip_model, terrain_obs=terrain_obs,
-                                           terrain_obs_noise=terrain_obs_noise)
+    env_kwargs = dict(reward_fn=reward, lidar_config=lidar_config, num_sections=num_sections,
+                      max_iteration_steps=max_steps, cell_size=args.cell_size,
+                      render_mode="human" if args.render else None)
+    if slippery:
+        robot_cls = SlipperyGridRobot if action_dim == GridRobot.NUM_ACTIONS else SlipperyGridRobotNotTurning
+        robot = robot_cls(slip_model=slip_model)
+        env = Slippery_Grid_Robot_Sections_Env_MultiMap(maps=[SlipperyGridMap.load(p) for p in map_paths], robot=robot,
+                                                        terrain_obs=terrain_obs, terrain_obs_noise=terrain_obs_noise,
+                                                        **env_kwargs)
+    else:
+        robot = GridRobot() if action_dim == GridRobot.NUM_ACTIONS else GridRobotNotTurning()
+        env = Grid_Robot_Sections_Env_MultiMap(maps=[GridMap.load(p) for p in map_paths], robot=robot, **env_kwargs)
     # Runs without config.json (tests <= 24) were trained with the mirrored goal angle
     env._legacy_goal_angle = run_config is None if args.legacy_goal_angle is None else args.legacy_goal_angle
     if env.get_observation_dim() != obs_dim:
