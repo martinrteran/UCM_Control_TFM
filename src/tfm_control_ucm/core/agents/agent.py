@@ -660,7 +660,8 @@ class DQNAgent(BaseRLAgent):
         
         # Exploration
         self.epsilon = config.eps_start# type: ignore
-    
+        self.updates = 0 # Gradient updates, for the target-network schedule
+
     def _initialize_networks(self, hidden_dim: int = 128, **kwargs):
         """Initialize Q-networks if not provided."""
         self.policy_net = SimpleQNetwork(
@@ -668,16 +669,16 @@ class DQNAgent(BaseRLAgent):
             self.config.action_dim,
             hidden_dim=hidden_dim
         )
-    
+
     def select_action(self, state: np.ndarray, training: bool = True) -> int:
-        """Select action using epsilon-greedy policy."""
-        self.global_step += 1
-        
-        # Epsilon decay
-        self.epsilon = self.config.eps_end + (# type: ignore
-            self.config.eps_start - self.config.eps_end# type: ignore
-        ) * np.exp(-1.0 * self.global_step / self.config.eps_decay)# type: ignore
-        
+        """Select action using epsilon-greedy policy (greedy, without moving epsilon, when not training)."""
+        if training:
+            self.global_step += 1
+            # Epsilon decay
+            self.epsilon = self.config.eps_end + (# type: ignore
+                self.config.eps_start - self.config.eps_end# type: ignore
+            ) * np.exp(-1.0 * self.global_step / self.config.eps_decay)# type: ignore
+
         # Epsilon-greedy
         if training and np.random.random() < self.epsilon:
             return int(np.random.randint(0, self.config.action_dim))
@@ -700,8 +701,10 @@ class DQNAgent(BaseRLAgent):
         self._clip_grad_norm()
         self.optimizer.step()
         
-        # Update target network
-        if self.global_step % self.config.target_update == 0:# type: ignore
+        # Update target network every target_update gradient updates (checking global_step here, which only
+        # happens on training steps, fired irregularly when training every few steps)
+        self.updates += 1
+        if self.updates % self.config.target_update == 0:# type: ignore
             self.hard_update(self.policy_net, self.target_net)
         
         return loss.item()

@@ -183,7 +183,7 @@ change: the eval scripts, and `GridMap.save()` / `GridObstacle.get_json_repr()` 
 - Not done: a friction-aware planner (Dijkstra with expected cost) for `optimal_steps`; the goal only counts if the
   robot *ends* the step on it (sliding over it does not).
 
-### 2a-quinquies. `MaskedDQNAgent` (`core/agents/masked_dqn.py`, new; `DQNAgent` and `GridAgent` unchanged)
+### 2a-quinquies. `MaskedDQNAgent` (`core/agents/masked_dqn.py`, new; `GridAgent` unchanged, `DQNAgent` only bug-fixed, §2g)
 
 Double DQN with invalid-action masking, the DQN counterpart of PPO + masking (test 31). Why a new agent:
 `DQNAgent` raised on masks, its target update checked `global_step % target_update` only on training steps (so it
@@ -288,7 +288,7 @@ obstacles (14, overlapping: 121 occupied cells).
 
 ### 2g. Tests and bug fixes (decoupling phases 0–4)
 
-`pytest` (from the repo root, ~11 s) runs 184 tests in `tests/` (incl. `test_masked_dqn`)
+`pytest` (from the repo root, ~12 s) runs 186 tests in `tests/` (incl. `test_masked_dqn`, `test_dqn_agent`)
 (`test_map`, `test_robot`, `test_environment`, `test_rewards`, `test_heading`,
 `test_training`, `test_scripts`, `test_curriculum`, `test_action_masking`, `test_slip`). `matplotlib` and `pandas` are installed in `.venv` (not in
 `requirements.txt`). They build tiny
@@ -311,6 +311,10 @@ Bugs fixed (each reproduced by a test first):
 - `DQNAgent`: the target net ignored a custom `q_network` (state_dict mismatch) and
   it read `config.use_double_dqn` instead of `double_dqn` (crashed on the first
   update). No script used `DQNAgent` (they use `GridAgent`).
+- `DQNAgent` (2026-11-07, user allowed fixing broken agents in place; `test_dqn_agent.py`): the target network is
+  copied every `target_update` *gradient updates* (it checked `global_step % target_update` on training steps only,
+  so with training every 4 steps it fired irregularly), and `training=False` no longer advances `global_step` /
+  ε. Masking is still only in `MaskedDQNAgent`.
 
 Still open: `GridAgent_2_FIXED`, the commented-out `Grid_Robot_Env_Image_lidar`
 and other commented-out code (phase 5).
