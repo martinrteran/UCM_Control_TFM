@@ -197,6 +197,17 @@ time-limit bias); hard target copy every `target_update` gradient updates; no up
 `eps_decay` default 500k). Logs `Policy/Epsilon/Episode`, `Agent/Q/Mean`, `Agent/DQN/Loss`, `Agent/DQN/Updates`.
 `eval_agent.py` loads `dqn`/`ddqn` checkpoints as `MaskedDQNAgent` (`grid_agent` still as `GridAgent`), so
 `eval_policy_modes.py` works; its "sampled" mode is ε-greedy with ε = `eps_end` for DQN. Tests: `test_masked_dqn.py`.
+Options added 2026-11-07 (off by default, test 36 runs without them): `soft_target_update` (Polyak with `tau` after
+every update) and `bootstrap_truncated` (step-limit truncation bootstraps; only correct when truncation cannot be a
+collision — masked runs without slips).
+
+**Observed DQN instability (2026-11-07, test 36 at episode ~1650)**: success rose to 77 % while ε was high
+(episodes 250-750) and fell to 23 % as ε reached 0.05 (77 % timeouts, steps ratio 10 = greedy loops), with mean Q
+up to 37 — above any reachable return (≈ 20 goal + ≤ 10 progress) while episode returns were 1-4: overestimation.
+Sanity check on a 30×30 empty map: `MaskedDQNAgent` **and** the plain `DQNAgent` both reach ~100 % greedy in 150
+episodes and then degrade (to 29-48 %) once ε is small, with clipped **and** signed progress → not a code bug of
+one agent; a stability problem of DQN on this task (plus the greedy loops of §2i.1). A sweep of fixes (lr 1e-4,
+soft target, target every 250 updates, ε_end 0.1, bootstrap on truncation) was run on that map; see §3 / results.
 
 ### 2b. Train/eval scripts
 
@@ -288,7 +299,7 @@ obstacles (14, overlapping: 121 occupied cells).
 
 ### 2g. Tests and bug fixes (decoupling phases 0–4)
 
-`pytest` (from the repo root, ~12 s) runs 186 tests in `tests/` (incl. `test_masked_dqn`, `test_dqn_agent`)
+`pytest` (from the repo root, ~12 s) runs 188 tests in `tests/` (incl. `test_masked_dqn`, `test_dqn_agent`)
 (`test_map`, `test_robot`, `test_environment`, `test_rewards`, `test_heading`,
 `test_training`, `test_scripts`, `test_curriculum`, `test_action_masking`, `test_slip`). `matplotlib` and `pandas` are installed in `.venv` (not in
 `requirements.txt`). They build tiny
@@ -419,7 +430,9 @@ a given run. Summary from commit messages + script contents:
 | 33 | Test 31 on the slippery maps, `SlipModel()` defaults, slide into obstacle = collision, observation unchanged | 4 `_slippery` maps | "Slippery floors…" | **not trained yet** (§2a-quater) |
 | 34 | Test 33 + `terrain_obs="proprio"` (momentum, slipped flag, noisy μ here) | 4 `_slippery` maps | "Slippery floors…" | **not trained yet** |
 | 35 | `grid_training_34.py --no-slippery`: test 31 + proprio observation, no slips | all 4 maps | — | **optional, not trained**: isolates the effect of the momentum on the greedy loops |
-| 36 | Test 31 with `MaskedDQNAgent` (Double DQN + masking) instead of PPO, seed 0 | all 4 maps | "MaskedDQNAgent…" | **not trained yet** — the DQN baseline of the thesis |
+| 36 | Test 31 with `MaskedDQNAgent` (Double DQN + masking) instead of PPO, seed 0 | all 4 maps | "MaskedDQNAgent…" | **training (launched 2026-11-07 20:04)** — the DQN baseline of the thesis; unstable at episode ~1650 (§2a-quinquies) |
+| 37 | `grid_training_37.py`: plain `DQNAgent` (fixed), classic DQN target, **no masking**, ε exponential (decay 150k), seed 0 | all 4 maps | — | **training (launched 20:23)** |
+| 38 | `grid_training_37.py --double_dqn --test_number 38`: as 37 with Double DQN | all 4 maps | — | **training (launched 20:23)** |
 
 Test 25 takeaway: success climbs to ~83 % in 4k episodes and to 93 % by 40k, still rising (entropy 0.55 nats
 at the end, map_simple still improving). Successful paths are near-optimal (median steps/BFS 1.08). Failures:

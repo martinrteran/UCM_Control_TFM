@@ -52,9 +52,19 @@ class MaskedDQNConfig(DQNConfig):
         Gradient updates between two copies of the online network to the target network.
     learning_starts : int
         Transitions in the buffer before the first gradient update.
+    soft_target_update : bool
+        If True the target network follows the online one with Polyak averaging
+        (target = (1 - tau) * target + tau * online) after every update, instead of
+        a hard copy every target_update updates.
+    bootstrap_truncated : bool
+        If True a truncated transition (step limit) bootstraps from the next state, as
+        it is not a real end of the task. Only correct when truncation cannot be a
+        collision (masked runs without slips); False treats it as terminal.
     """
     eps_decay: int = 500_000
     learning_starts: int = 5_000
+    soft_target_update: bool = False
+    bootstrap_truncated: bool = False
 
 
 class MaskedReplayBuffer:
@@ -168,9 +178,13 @@ class MaskedDQNAgent(BaseRLAgent):
         return self.select_action(state, training=training, action_mask=action_mask)
 
     def observe(self, state, action, reward, next_state, terminated, truncated):
-        done = bool(terminated or truncated)
+        cfg: MaskedDQNConfig = self.config # type: ignore
+        done = bool(terminated or (truncated and not cfg.bootstrap_truncated))
         transition = (state, action, reward, next_state, done)
         if done: # Not bootstrapped: its next-state mask is not used
+            self.buffer.add(*transition, np.ones(self.config.action_dim, dtype=bool))
+        elif terminated or truncated:
+            # Episode over but bootstrapped (step limit): no next act() will bring the mask; any valid action counts
             self.buffer.add(*transition, np.ones(self.config.action_dim, dtype=bool))
         else:
             self._pending = transition
@@ -198,7 +212,9 @@ class MaskedDQNAgent(BaseRLAgent):
         self.optimizer.step()
 
         self.updates += 1
-        if self.updates % cfg.target_update == 0:
+        if cfg.soft_target_update:
+            self.soft_update(self.policy_net, self.target_net, cfg.tau) # type: ignore
+        elif self.updates % cfg.target_update == 0:
             self.hard_update(self.policy_net, self.target_net) # type: ignore
         self.last_loss = float(loss.item())
         return self.last_loss

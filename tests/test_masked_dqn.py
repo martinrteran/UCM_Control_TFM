@@ -152,6 +152,24 @@ def test_target_network_is_copied_every_target_update_updates():
     assert same() and agent.updates == 3
 
 
+def test_bootstrap_truncated_keeps_time_limit_transitions_non_terminal():
+    agent = make_agent(bootstrap_truncated=True)
+    agent.observe(np.zeros(OBS), 0, 1.0, np.ones(OBS), False, True)   # step limit: bootstrapped
+    agent.observe(np.zeros(OBS), 0, 20.0, np.ones(OBS), True, False)  # goal: terminal
+    assert agent.buffer.dones[:2].tolist() == [0.0, 1.0] and agent._pending is None
+
+
+def test_soft_target_update_moves_the_target_part_of_the_way():
+    agent = make_agent(soft_target_update=True, tau=0.5, lr=0.1)
+    for i in range(8):
+        agent.observe(np.random.rand(OBS), i % ACT, float(i), np.random.rand(OBS), True, False)
+    before = [p.clone() for p in agent.target_net.parameters()]
+    agent.train_step()
+    online, target = list(agent.policy_net.parameters()), list(agent.target_net.parameters())
+    for b, o, t in zip(before, online, target):
+        assert torch.allclose(t, 0.5 * b + 0.5 * o)
+
+
 def test_save_and_load_restore_networks_and_epsilon(tmp_path):
     agent = make_agent(eps_decay=10, eps_end=0.1)
     for _ in range(20):
