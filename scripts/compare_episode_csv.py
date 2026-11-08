@@ -26,7 +26,8 @@ import pandas as pd
 
 from plot_episode_csv import load
 
-COLORS = ["#264653", "#e76f51", "#2a9d8f", "#e9c46a"]
+# One colour per run: zip(COLORS, runs) drops the runs beyond the last colour, so keep this longer than any comparison
+COLORS = ["#264653", "#e76f51", "#2a9d8f", "#e9c46a", "#8d6cab", "#7f8c8d", "#c0392b", "#16a085"]
 
 
 def stage_starts(df: pd.DataFrame) -> list:
