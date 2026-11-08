@@ -209,6 +209,28 @@ episodes and then degrade (to 29-48 %) once ε is small, with clipped **and** si
 one agent; a stability problem of DQN on this task (plus the greedy loops of §2i.1). A sweep of fixes (lr 1e-4,
 soft target, target every 250 updates, ε_end 0.1, bootstrap on truncation) was run on that map; see §3 / results.
 
+### 2a-sexies. `StandardPPOAgent` (textbook PPO, `core/agents/standard_ppo.py`) and step-info trainers
+
+Answers §2i.2 (`PPOAgent` is not textbook PPO; `PPOAgent` itself is unchanged). `StandardPPOAgent`: rollouts of
+`rollout_steps` (2048) env steps across episodes → GAE(λ) with `V(s')` per step (terminal = no bootstrap; time limit
+and mid-episode rollout end bootstrap; the recursion is cut at every episode end) → `n_epochs` (10) of shuffled
+minibatches of `batch_size` (64): clipped surrogate on per-minibatch normalised advantages, value loss 0.5·MSE
+(optional `clip_value`), entropy bonus, grad clip, optional `target_kl` early stop → rollout discarded. Masking:
+masks stored with the rollout, masked log-probs/entropy in the update. The update runs inside `observe()` when the
+rollout is full (`train_on_step = False`, independent of `eps_step`); `on_episode_end` returns the loss of an
+update done during the episode. Logs `Agent/Entropy`, `Agent/Policy/Loss`, `Agent/Value/Loss`, `Agent/PPO/ApproxKL`,
+`ClipFraction`, `ExplainedVariance`, `Updates`. Checkpoints use the `PPOAgent` format (algorithm "ppo"), so
+`eval_agent.py` evaluates them as `PPOAgent` (same greedy/sampled behaviour; tested).
+
+Collisions vs time limit: the env ends both as `truncated` (§2i.3) and `TrainingManager` passes no info to agents,
+so `core/training/step_info_trainer.py` adds `StepInfoSingleTrainer` / `StepInfoMultiEnvironmentTrainer` /
+`SlipStepInfoSingleTrainer` (with slip logging): `StepInfoRelay` wraps each episode's env and calls
+`agent.on_step_info(info)` after `env.step()`, before the loop's `observe()`. `StandardPPOAgent` then treats
+`info['hit_obstacle']` as terminal; without relay, `truncation_is_terminal` (default False) decides.
+Smoke run (600 episodes, test 41 setup): 93 % training success from episode ~150 (PPOAgent needs ~1500),
+241 steps/s on the GPU (10 epochs per 2048 steps), approx KL 0.018, clip fraction 0.19, explained variance 0.79.
+Tests: `tests/test_standard_ppo.py` (GAE cases, collision vs time limit, rollout/epochs, target_kl, masking, eval).
+
 ### 2b. Train/eval scripts
 
 - `train/grid_training_25.py` — **the working script**. Same setup as 24 (PPO,
@@ -431,6 +453,7 @@ a given run. Summary from commit messages + script contents:
 | 34 | Test 33 + `terrain_obs="proprio"` (momentum, slipped flag, noisy μ here), seed 0; 2 h 52 min | 4 `_slippery` maps | "Slippery floors…" | **Proprioception helps. Eval vs 33: greedy 95.0 % (33: 92.6 %, z = +2.2), loops 14 (33: 59); sampled 96.0 % (93.4 %, z = +2.6), simple_map 89.5 / 94.0 %. 36 % fewer slips (greedy 2112 vs 3309): far fewer drags (665 vs 1374) and diagonals (429 vs 915), same overshoots — it learned to avoid reversing and turning on ice. Greedy slide collisions went up (35 vs 15), sampled down (37 vs 55).** The drop in loops matches the memory hypothesis of §2i.1 (momentum = previous move); test 35 (`grid_training_34.py --no-slippery`) would separate it from the slip effect. 1 seed, z ≈ 2.2-2.6. Plots: `plots/compare_33_34/` |
 | 35 | `grid_training_34.py --no-slippery`: test 31 + proprio observation (momentum = last move; slip flag 0, μ ≈ 1), no slips, seed 0 | all 4 maps | — | **New best agent: momentum removes the greedy loops. Eval vs 31: greedy 99.6 % (31: 95.9 %, z = +5.6; 31's 5 seeds: 95.7 ± 0.4 %), loops 4 (31: 41), simple_map 98.4 %; sampled 99.7 %; 0 collisions. Confirms §2i.1: the loops were partial observability of a memoryless deterministic policy; remembering the last move is enough. Greedy ≈ sampled now.** Plots: `plots/compare_31_35/` |
 | 40 | `grid_training_40.py`: test 36 (masked Double DQN, lr 5e-4) with the observation of test 35 (`terrain_obs="proprio"`, plain maps, no slips), seed 0; 3 h 30 min | all 4 maps | "Test 40…" | **Momentum also cures most of DQN's loops: greedy 91.1 % (36: 65.6 %, z ≈ +13.8), loops 88 (36: 344), obstacle_free 100 %; sampled 94.9 % (36: 80.5 %); 0 collisions. Best DQN so far, but still below PPO with the same observation (35: 99.6 % greedy, z = −9.0; 99.7 % sampled, z = −6.6) and below PPO without it (31: 95.9 %).** Same early dip as every DQN (mean Q 25, success 17 % around episode 1000). Fair DQN-vs-PPO pair: 40 vs 35. Plots: `plots/compare_35_40_36_31/` |
+| 41 | `grid_training_41.py`: test 35 with `StandardPPOAgent` (textbook PPO: rollout 2048, 10 epochs, minibatch 64, lr 3e-4, GAE 0.95, clip 0.2, ent 0.01, grad clip 0.5) + `StepInfoSingleTrainer` | all 4 maps | — | **not trained yet** — textbook PPO vs `PPOAgent` (35) and vs DQN (40) |
 | 401-404 | Test 40, seeds 1-4 (`grid_training_40.py --seed S --test_number 40S`), ~3 h 45 each (4 in parallel) | all 4 maps | — | **DQN vs PPO with equal observation, 5 seeds each (`plots/seeds_40/seeds_stats.md`, vs 35's seeds): greedy 87.9 ± 3.8 % [83.2, 92.7] vs 99.4 ± 0.4 % (Welch t = 6.7, df 4.1), loops 120 ± 38 vs 6 ± 4; sampled 93.8 ± 2.3 % vs 99.7 ± 0.2 % (t = 5.9); simple_map 75.9 ± 6.1 vs 98.0 ± 0.8 % greedy; 0 collisions in all 10 runs. DQN's seed spread is ~10× PPO's. Seed 0 (91.1 %) was among the better DQN seeds.** `seed_stats.py 40 401 402 403 404 --vs 35 351 352 353 354` |
 | 351-354 | Test 35, seeds 1-4 (`grid_training_34.py --no-slippery --seed S --test_number 35S`), ~3 h each (4 in parallel + test 40) | all 4 maps | — | **Confirmed over 5 seeds (`plots/seeds_35/seeds_stats.md`, vs the 5 seeds of 31): greedy 99.4 ± 0.4 % [98.9, 99.8] vs 95.7 ± 0.4 % (Welch t = 16.0, df 8); loops 6.2 ± 3.8 vs 42.6 ± 3.3 (t = 16.3); simple_map 98.0 ± 0.8 vs 90.4 ± 1.6 %; sampled 99.7 ± 0.2 vs 99.3 ± 0.4 % (t = 2.2, df 5); 0 collisions in every seed.** `seed_stats.py 35 351 352 353 354 --vs 31 311 312 313 314` (p values need scipy, not installed) |
 | 36 | Test 31 with `MaskedDQNAgent` (Double DQN + masking) instead of PPO, seed 0; 4 h 30 min (with 3 other runs in parallel) | all 4 maps | "MaskedDQNAgent…" | **Far below PPO. Eval greedy 65.6 % (31: 95.9 %, z = −17.2), 0 collisions, 344 timeouts all loops (even obstacle_free 83 %); sampled (ε-greedy 0.05) 80.5 %. Training: dip to 28 % around episode 1500 (mean Q 37 > reachable returns), then 90-92 % (ε = 0.05) for the rest — the final checkpoint is worse than the training plateau: DQN snapshots vary a lot.** Masking removes collisions but not the greedy loops. Plots: `plots/compare_31_36_37_38/` |
