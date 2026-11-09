@@ -25,6 +25,10 @@ param(
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $root
 $python = Join-Path $root ".venv\Scripts\python.exe"
+# With stdout redirected to a file, Python on Windows writes cp1252 and crashes on the emoji
+# some prints use (e.g. BaseRLAgent.load). Force UTF-8 for every child process.
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 
 function Get-SeedTests([int]$t, [int[]]$seeds) {
     $seeds | ForEach-Object { if ($_ -eq 0) { "$t" } else { "$t$_" } }

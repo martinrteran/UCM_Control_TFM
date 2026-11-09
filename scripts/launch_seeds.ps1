@@ -24,6 +24,9 @@ $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $root
 $python = Join-Path $root ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) { throw "Python not found: $python" }
+# With stdout redirected to a file, Python on Windows writes cp1252 and crashes on emoji in prints.
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 if (-not (Test-Path $Script)) { throw "Script not found: $Script" }
 New-Item -ItemType Directory -Force logs | Out-Null
 
