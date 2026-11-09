@@ -71,12 +71,62 @@ class StandardPPOConfig(PPOConfig):
     truncation_is_terminal : bool
         What a truncation without step info means: False bootstraps (time limit),
         True does not. With step info, a collision is always terminal and a time limit never is.
+
+    Variants from the literature (all off by default = the clipped PPO of Schulman et al. 2017):
+
+    clip_mode : str
+        "clip": L = min(r·A, clip(r, 1±ε)·A).
+        "dual_clip": Ye et al. (AAAI 2020), for A < 0 also bound L from below:
+            L = max(min(r·A, clip(r)·A), c·A), with c = dual_clip_c > 1 (the paper uses 3).
+        "rollback": PPO-RB, Wang et al. (UAI 2019, "Truly PPO"): L = min(r·A, F(r)·A) with
+            F(r) = −α·r + (1+α)(1−ε) for r ≤ 1−ε, −α·r + (1+α)(1+ε) for r ≥ 1+ε, r otherwise,
+            α = rollback_alpha (the paper uses 0.3 on Mujoco): the slope outside the range is
+            reversed instead of zero, pushing the ratio back.
+        "none": L = r·A (use with a KL penalty).
+    kl_coef : float
+        Weight β of a KL(π_old ‖ π) penalty added to the policy loss (estimator (r−1) − log r).
+    kl_target : float or None
+        If set, β adapts after every update as in Schulman et al. 2017 §4: halved when the mean
+        KL < kl_target / 1.5, doubled when > 1.5 · kl_target.
+    anneal_lr_episodes : int or None
+        If set, the learning rate decays linearly from lr to 0 over this many episodes
+        (Huang et al. 2022, "37 implementation details"; Andrychowicz et al. 2021).
     """
     n_epochs: int = 10
     normalize_advantages: bool = True
     clip_value: Optional[float] = None
     target_kl: Optional[float] = None
     truncation_is_terminal: bool = False
+    clip_mode: str = "clip"
+    dual_clip_c: float = 3.0
+    rollback_alpha: float = 0.3
+    kl_coef: float = 0.0
+    kl_target: Optional[float] = None
+    anneal_lr_episodes: Optional[int] = None
+
+    def __post_init__(self):
+        if self.clip_mode not in CLIP_MODES: raise ValueError(f"clip_mode must be one of {CLIP_MODES}")
+        if self.clip_mode == "dual_clip" and self.dual_clip_c <= 1: raise ValueError("dual_clip_c must be > 1")
+        if self.rollback_alpha < 0: raise ValueError("rollback_alpha must be >= 0")
+
+
+CLIP_MODES = ("clip", "dual_clip", "rollback", "none")
+
+
+def surrogate(ratio: torch.Tensor, adv: torch.Tensor, cfg: StandardPPOConfig) -> torch.Tensor:
+    """Per-sample policy objective (to maximise) of the configured clip_mode."""
+    eps = cfg.clip_eps
+    if cfg.clip_mode == "none":
+        return ratio * adv
+    if cfg.clip_mode == "rollback":
+        a = cfg.rollback_alpha
+        rolled = torch.where(ratio <= 1 - eps, -a * ratio + (1 + a) * (1 - eps),
+                             torch.where(ratio >= 1 + eps, -a * ratio + (1 + a) * (1 + eps), ratio))
+        return torch.min(ratio * adv, rolled * adv)
+    clipped = torch.min(ratio * adv, ratio.clamp(1 - eps, 1 + eps) * adv)
+    if cfg.clip_mode == "dual_clip":
+        return torch.where(adv < 0, torch.max(clipped, cfg.dual_clip_c * adv), clipped)
+    return clipped
 
 
 class RolloutBuffer:
@@ -161,9 +211,11 @@ class StandardPPOAgent(BaseRLAgent):
         self._pending: Optional[tuple] = None # (log_prob, value, mask) of the last training act()
         self._step_info: Optional[dict] = None # Info of the last env step, if a trainer relays it
         self._episode_loss: Optional[float] = None
+        self.kl_coef = float(config.kl_coef) # β of the KL penalty (adapted if kl_target is set)
         self.metrics: Dict[str, float] = {"Agent/Entropy": 0.0, "Agent/Policy/Loss": 0.0, "Agent/Value/Loss": 0.0,
                                           "Agent/PPO/ApproxKL": 0.0, "Agent/PPO/ClipFraction": 0.0,
-                                          "Agent/PPO/ExplainedVariance": 0.0, "Agent/PPO/Updates": 0.0}
+                                          "Agent/PPO/ExplainedVariance": 0.0, "Agent/PPO/Updates": 0.0,
+                                          "Agent/PPO/KLCoef": self.kl_coef, "Agent/PPO/LearningRate": float(config.lr)}
 
     def _initialize_networks(self, **kwargs):
         raise ValueError("StandardPPOAgent needs a policy_network and a value_network")
@@ -232,6 +284,12 @@ class StandardPPOAgent(BaseRLAgent):
 
     def on_episode_end(self, last_state: np.ndarray) -> Optional[float]:
         self.episode_count += 1
+        cfg: StandardPPOConfig = self.config # type: ignore
+        if cfg.anneal_lr_episodes:
+            lr = cfg.lr * max(0.0, 1.0 - self.episode_count / cfg.anneal_lr_episodes)
+            for group in self.optimizer.param_groups:
+                group["lr"] = lr
+            self.metrics["Agent/PPO/LearningRate"] = lr
         loss, self._episode_loss = self._episode_loss, None
         return loss
 
@@ -273,7 +331,9 @@ class StandardPPOAgent(BaseRLAgent):
 
                 log_ratio = log_probs - old_log_probs[idx]
                 ratio = log_ratio.exp()
-                policy_loss = -torch.min(ratio * adv, ratio.clamp(1 - cfg.clip_eps, 1 + cfg.clip_eps) * adv).mean()
+                policy_loss = -surrogate(ratio, adv, cfg).mean()
+                if self.kl_coef > 0: # KL(π_old ‖ π) penalty, estimator E_old[(r − 1) − log r] (≥ 0)
+                    policy_loss = policy_loss + self.kl_coef * ((ratio - 1) - log_ratio).mean()
 
                 values = self.value_net(states[idx]).reshape(-1) # type: ignore
                 if cfg.clip_value is not None:
@@ -300,12 +360,17 @@ class StandardPPOAgent(BaseRLAgent):
             if stop: break
 
         explained_variance = 1.0 - np.var(returns - r.values[:n]) / np.var(returns) if np.var(returns) > 0 else 0.0
+        mean_kl = float(np.mean(kls))
+        if cfg.kl_target is not None and self.kl_coef > 0: # Adaptive β, Schulman et al. 2017 §4
+            if mean_kl < cfg.kl_target / 1.5: self.kl_coef /= 2
+            elif mean_kl > cfg.kl_target * 1.5: self.kl_coef *= 2
         self.updates += 1
         self.rollout.clear()
         self.metrics = {"Agent/Entropy": float(np.mean(entropies)), "Agent/Policy/Loss": float(np.mean(policy_losses)),
-                        "Agent/Value/Loss": float(np.mean(value_losses)), "Agent/PPO/ApproxKL": float(np.mean(kls)),
+                        "Agent/Value/Loss": float(np.mean(value_losses)), "Agent/PPO/ApproxKL": mean_kl,
                         "Agent/PPO/ClipFraction": float(np.mean(clip_fractions)),
-                        "Agent/PPO/ExplainedVariance": float(explained_variance), "Agent/PPO/Updates": float(self.updates)}
+                        "Agent/PPO/ExplainedVariance": float(explained_variance), "Agent/PPO/Updates": float(self.updates),
+                        "Agent/PPO/KLCoef": self.kl_coef, "Agent/PPO/LearningRate": float(self.optimizer.param_groups[0]["lr"])}
         self.log_training_step(loss=float(np.mean(losses)))
         return float(np.mean(losses))
 

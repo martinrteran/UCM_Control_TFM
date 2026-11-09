@@ -151,6 +151,63 @@ def test_value_learns_a_constant_return():
 
 
 # ------------------------------------------------------------
+# Variants from the literature
+# ------------------------------------------------------------
+def _cfg(**kw):
+    return StandardPPOConfig(name="p", obs_dim=OBS, action_dim=ACT, algorithm=RLAlgorithm.PPO, device="cpu", clip_eps=0.2, **kw)
+
+
+def test_clip_surrogate_is_the_ppo_objective():
+    from tfm_control_ucm.core.agents.standard_ppo import surrogate
+    ratio, adv = torch.tensor([0.5, 1.0, 1.5, 1.5]), torch.tensor([1.0, 1.0, 1.0, -1.0])
+    # min(rA, clip(r)A): 0.5, 1.0, min(1.5, 1.2) = 1.2, min(-1.5, -1.2) = -1.5
+    assert surrogate(ratio, adv, _cfg()).tolist() == pytest.approx([0.5, 1.0, 1.2, -1.5])
+
+
+def test_dual_clip_bounds_negative_advantages_from_below():
+    from tfm_control_ucm.core.agents.standard_ppo import surrogate
+    ratio, adv = torch.tensor([5.0, 5.0, 1.5]), torch.tensor([-1.0, 1.0, -1.0])
+    # A < 0, r = 5: clip gives min(-5, -1.2) = -5, dual clip raises it to c·A = -3; A > 0 is unchanged (1.2)
+    assert surrogate(ratio, adv, _cfg(clip_mode="dual_clip", dual_clip_c=3.0)).tolist() == pytest.approx([-3.0, 1.2, -1.5])
+
+
+def test_rollback_reverses_the_slope_outside_the_clip_range():
+    from tfm_control_ucm.core.agents.standard_ppo import surrogate
+    cfg = _cfg(clip_mode="rollback", rollback_alpha=0.3)
+    ratio = torch.tensor([1.0, 1.2, 1.5, 0.5], requires_grad=True)
+    adv = torch.tensor([1.0, 1.0, 1.0, -1.0])
+    out = surrogate(ratio, adv, cfg)
+    # F(1.5) = -0.3·1.5 + 1.3·1.2 = 1.11 < 1.5 -> 1.11; F(0.5) = -0.3·0.5 + 1.3·0.8 = 0.89, min(-0.5, -0.89) = -0.89
+    assert out.tolist() == pytest.approx([1.0, 1.2, 1.11, -0.89])
+    out.sum().backward()
+    assert ratio.grad[2].item() == pytest.approx(-0.3)  # pushes the ratio back (clip would give 0)
+
+
+def test_adaptive_kl_coefficient_follows_schulman_rule():
+    agent = make_agent(rollout_steps=8, batch_size=8, n_epochs=1, lr=0.0, kl_coef=1.0, kl_target=0.01)
+    for _ in range(8):
+        state = np.random.rand(OBS)
+        action = agent.act(state, training=True)
+        agent.observe(state, action, 1.0, np.random.rand(OBS), False, False)
+    assert agent.kl_coef == pytest.approx(0.5)  # lr 0: KL = 0 < target / 1.5 -> halved
+
+
+def test_learning_rate_decays_linearly_over_episodes():
+    agent = make_agent(lr=1e-3, anneal_lr_episodes=10)
+    for _ in range(5):
+        agent.on_episode_end(np.zeros(OBS))
+    assert agent.optimizer.param_groups[0]["lr"] == pytest.approx(5e-4)
+    for _ in range(10):
+        agent.on_episode_end(np.zeros(OBS))
+    assert agent.optimizer.param_groups[0]["lr"] == 0.0
+
+
+def test_unknown_clip_mode_is_rejected():
+    with pytest.raises(ValueError):
+        _cfg(clip_mode="spline")
+
+
+# ------------------------------------------------------------
 # Trainers
 # ------------------------------------------------------------
 def test_relay_hands_the_step_info_to_the_agent():

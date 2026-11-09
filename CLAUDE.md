@@ -61,6 +61,10 @@ python scripts/plot_runs.py 21 24 --smooth 100 --save
 # Compare final-phase stats across runs (generates markdown table)
 python scripts/compare_runs.py 21 22 24 --tail 0.2
 
+# Launch a script with seeds 0-4 (tests N, N1..N4) in the background, then evaluate and compare them
+powershell -File scripts/launch_seeds.ps1 -Script train/grid_training_43.py -Test 43
+powershell -File scripts/evaluate_seeds.ps1 -Test 43 -Vs 42,35,40
+
 # Inspect checkpoint metadata without loading the full model
 python scripts/inspect_checkpoint.py checkpoints/Test/24/
 ```
